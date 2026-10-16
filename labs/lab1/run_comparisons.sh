@@ -5,49 +5,27 @@
 # Comprehensive benchmark runner for Lab 1: First CUDA Applications
 # Course: Massively Parallel Programming on GPUs
 # 
-# Runs all 4 implementations across all block sizes:
-#   1. Unified-Memory / Monolithic-Kernels
-#   2. Unified-Memory / Grid-Stride-Loop-Kernels
-#   3. Standard-Memory / Monolithic-Kernels
-#   4. Standard-Memory / Grid-Stride-Loop-Kernels
+# Usage:
+#   ./run_comparisons.sh             # Runs full comparison sweep across all 4 configurations
+#   ./run_comparisons.sh 5           # Runs each configuration 5 times and averages findings
+#   ./run_comparisons.sh 5 256       # Runs each configuration 5 times with blockSize=256
 # ==============================================================================
 
 set -e
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-echo "================================================================================"
-echo " Building Lab 1 Implementations..."
-echo "================================================================================"
-make all
+make lab1
 
-echo ""
-echo "================================================================================"
-echo " [1/4] Running Unified-Memory / Monolithic-Kernels"
-echo "================================================================================"
-./unified_monolithic "$@"
-
-echo ""
-echo "================================================================================"
-echo " [2/4] Running Unified-Memory / Grid-Stride-Loop-Kernels"
-echo "================================================================================"
-./unified_grid_stride "$@"
-
-echo ""
-echo "================================================================================"
-echo " [3/4] Running Standard-Memory / Monolithic-Kernels"
-echo "================================================================================"
-./standard_monolithic "$@"
-
-echo ""
-echo "================================================================================"
-echo " [4/4] Running Standard-Memory / Grid-Stride-Loop-Kernels"
-echo "================================================================================"
-./standard_grid_stride "$@"
-
-echo ""
-echo "================================================================================"
-echo " All 4 implementations completed successfully!"
-echo "================================================================================"
-
+if [ "$#" -gt 0 ] && [ "$1" -eq "$1" ] 2>/dev/null; then
+    # First argument is an integer -> delegate to multi-run averaging harness
+    RUNS="$1"
+    SIZE="${2:-all}"
+    OP="${3:-all}"
+    python3 average_benchmarks.py -n "$RUNS" -s "$SIZE" --op "$OP"
+else
+    echo "================================================================================"
+    echo " Running Lab 1 Comprehensive Comparison Suite"
+    echo "================================================================================"
+    ./lab1 all "$@"
+fi

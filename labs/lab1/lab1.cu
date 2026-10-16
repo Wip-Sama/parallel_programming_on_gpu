@@ -1,18 +1,48 @@
 /**
- * Implementation 4: Standard-Memory / Grid-Stride-Loop-Kernels
+ * Lab 1: First CUDA Applications - Unified Driver
+ * Course: Massively Parallel Programming on GPUs
  * 
- * - Memory: Standard Memory (cudaMalloc on Device, malloc on Host)
- * - Kernel Model: Grid-Stride Loops (stride = gridDim * blockDim)
- * - Decoupled Grid: Grid size scaled to SM count (32 * numSMs)
- * - Transfers: Explicit cudaMemcpy (DtoH) of result buffer C
- * - Initialization: 3x vectorInitGSL / matrixInitGSL on GPU
- * - Computation: 1x vectorAddGSL / matrixAddGSL on GPU
+ * Provides all 4 CUDA implementations switchable via CLI:
+ *   Memory Model:  Unified Memory (u) vs Standard Memory (s)
+ *   Kernel Model:  Monolithic (m) vs Grid-Stride Loops (gs)
+ *   Operation:     Vector Addition (vector) vs Matrix Addition (matrix)
+ * 
+ * Usage:
+ *   ./lab1 <u|s> <m|gs> <vector|matrix> [size] [options]
  */
 
 #include "benchmark.h"
 
 // ---------------------------------------------------------------------------
-// CUDA Grid-Stride Loop Kernels
+// 1. CUDA Monolithic Kernels (1 thread per element, 1-to-1 grid mapping)
+// ---------------------------------------------------------------------------
+__global__ void vectorInit(double *data, double val, size_t n) {
+    size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) data[i] = val;
+}
+
+__global__ void vectorAdd(const double *A, const double *B, double *C, size_t n) {
+    size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) C[i] = A[i] + B[i];
+}
+
+__global__ void matrixInit(double *M, double val, size_t nrows, size_t ncols) {
+    size_t col = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    size_t row = (size_t)blockIdx.y * blockDim.y + threadIdx.y;
+    if (row < nrows && col < ncols) M[row * ncols + col] = val;
+}
+
+__global__ void matrixAdd(const double *A, const double *B, double *C, size_t nrows, size_t ncols) {
+    size_t col = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    size_t row = (size_t)blockIdx.y * blockDim.y + threadIdx.y;
+    if (row < nrows && col < ncols) {
+        size_t idx = row * ncols + col;
+        C[idx] = A[idx] + B[idx];
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 2. CUDA Grid-Stride Loop Kernels (stride = gridDim * blockDim)
 // Ref: Mark Harris, "CUDA Pro Tip: Write Flexible Kernels with Grid-Stride Loops"
 // ---------------------------------------------------------------------------
 __global__ void vectorInitGSL(double *data, double val, size_t n) {
@@ -62,10 +92,8 @@ __global__ void matrixAddGSL(const double *A, const double *B, double *C, size_t
 // Main Driver
 // ---------------------------------------------------------------------------
 int main(int argc, char **argv) {
-    return run_benchmark(argc, argv,
-                         "Lab 1: Implementation 4 - Standard-Memory / Grid-Stride-Loop-Kernels",
-                         "Standard-Memory / Grid-Stride-Loop-Kernels",
-                         "Standard / Grid-Stride",
-                         MEM_STANDARD, MODEL_GRID_STRIDE,
-                         vectorInitGSL, vectorAddGSL, matrixInitGSL, matrixAddGSL);
+    return run_benchmark_dispatcher(
+        argc, argv,
+        vectorInit, vectorAdd, matrixInit, matrixAdd,
+        vectorInitGSL, vectorAddGSL, matrixInitGSL, matrixAddGSL);
 }

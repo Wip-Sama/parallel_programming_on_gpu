@@ -4,19 +4,6 @@
 #include "common.h"
 
 // ---------------------------------------------------------------------------
-// Execution & Memory Model Enumerations
-// ---------------------------------------------------------------------------
-enum MemoryModel {
-    MEM_UNIFIED,
-    MEM_STANDARD
-};
-
-enum KernelModel {
-    MODEL_MONOLITHIC,
-    MODEL_GRID_STRIDE
-};
-
-// ---------------------------------------------------------------------------
 // Grid & Block Dimension Computation Utilities
 // ---------------------------------------------------------------------------
 static inline int calculate_vector_grid_size(size_t n, int blockSize, int numSMs, KernelModel model) {
@@ -220,86 +207,263 @@ GpuBenchResult2D run_matrix_benchmark(size_t nrows, size_t ncols, int blockSize,
 }
 
 // ---------------------------------------------------------------------------
-// High-Level Benchmark Suite Driver
+// Averaged Benchmark Runners (N repetitions)
+// ---------------------------------------------------------------------------
+template <typename InitKernel, typename AddKernel>
+GpuBenchResult1D run_vector_benchmark_avg(size_t n, int blockSize, int numSMs, double cpuMs,
+                                          MemoryModel memModel, KernelModel kernelModel,
+                                          InitKernel initKernel, AddKernel addKernel, int numRuns) {
+    if (numRuns <= 1) {
+        return run_vector_benchmark(n, blockSize, numSMs, cpuMs, memModel, kernelModel, initKernel, addKernel);
+    }
+    GpuBenchResult1D avgRes;
+    memset(&avgRes, 0, sizeof(avgRes));
+    int allPass = 1;
+
+    for (int r = 0; r < numRuns; r++) {
+        GpuBenchResult1D cur = run_vector_benchmark(n, blockSize, numSMs, cpuMs, memModel, kernelModel, initKernel, addKernel);
+        avgRes.initTimeMs += cur.initTimeMs;
+        avgRes.addTimeMs += cur.addTimeMs;
+        avgRes.memcpyTimeMs += cur.memcpyTimeMs;
+        avgRes.totalGpuTimeMs += cur.totalGpuTimeMs;
+        avgRes.blockSize = cur.blockSize;
+        avgRes.numBlocks = cur.numBlocks;
+        allPass &= cur.verified;
+    }
+    avgRes.initTimeMs /= (float)numRuns;
+    avgRes.addTimeMs /= (float)numRuns;
+    avgRes.memcpyTimeMs /= (float)numRuns;
+    avgRes.totalGpuTimeMs /= (float)numRuns;
+    avgRes.cpuTimeMs = cpuMs;
+    avgRes.speedup = (cpuMs > 0.0) ? (cpuMs / avgRes.totalGpuTimeMs) : 0.0;
+    avgRes.verified = allPass;
+    return avgRes;
+}
+
+template <typename InitKernel, typename AddKernel>
+GpuBenchResult2D run_matrix_benchmark_avg(size_t nrows, size_t ncols, int blockSize, int numSMs, double cpuMs,
+                                          MemoryModel memModel, KernelModel kernelModel,
+                                          InitKernel initKernel, AddKernel addKernel, int numRuns) {
+    if (numRuns <= 1) {
+        return run_matrix_benchmark(nrows, ncols, blockSize, numSMs, cpuMs, memModel, kernelModel, initKernel, addKernel);
+    }
+    GpuBenchResult2D avgRes;
+    memset(&avgRes, 0, sizeof(avgRes));
+    int allPass = 1;
+
+    for (int r = 0; r < numRuns; r++) {
+        GpuBenchResult2D cur = run_matrix_benchmark(nrows, ncols, blockSize, numSMs, cpuMs, memModel, kernelModel, initKernel, addKernel);
+        avgRes.initTimeMs += cur.initTimeMs;
+        avgRes.addTimeMs += cur.addTimeMs;
+        avgRes.memcpyTimeMs += cur.memcpyTimeMs;
+        avgRes.totalGpuTimeMs += cur.totalGpuTimeMs;
+        avgRes.blockSize = cur.blockSize;
+        avgRes.blockDim = cur.blockDim;
+        avgRes.gridDim = cur.gridDim;
+        allPass &= cur.verified;
+    }
+    avgRes.initTimeMs /= (float)numRuns;
+    avgRes.addTimeMs /= (float)numRuns;
+    avgRes.memcpyTimeMs /= (float)numRuns;
+    avgRes.totalGpuTimeMs /= (float)numRuns;
+    avgRes.cpuTimeMs = cpuMs;
+    avgRes.speedup = (cpuMs > 0.0) ? (cpuMs / avgRes.totalGpuTimeMs) : 0.0;
+    avgRes.verified = allPass;
+    return avgRes;
+}
+
+// ---------------------------------------------------------------------------
+// Suite Executor for a specific (memModel, kernelModel) configuration
 // ---------------------------------------------------------------------------
 template <typename VecInitKernel, typename VecAddKernel, typename MatInitKernel, typename MatAddKernel>
-int run_benchmark(int argc, char **argv,
-                  const char *appHeaderTitle,
-                  const char *sweepTableTitle,
-                  const char *shortName,
-                  MemoryModel memModel,
-                  KernelModel kernelModel,
-                  VecInitKernel vecInit,
-                  VecAddKernel vecAdd,
-                  MatInitKernel matInit,
-                  MatAddKernel matAdd) {
-    AppConfig cfg = parse_app_args(argc, argv);
-    cudaDeviceProp prop = print_app_header(appHeaderTitle, cfg.devId);
+void run_single_suite(const AppConfig &cfg, const cudaDeviceProp &prop,
+                      MemoryModel memModel, KernelModel kernelModel,
+                      VecInitKernel vecInit, VecAddKernel vecAdd,
+                      MatInitKernel matInit, MatAddKernel matAdd,
+                      double cpuVecMs, double cpuMatMs) {
+    const char *memTitle = (memModel == MEM_UNIFIED) ? "Unified-Memory" : "Standard-Memory";
+    const char *modelTitle = (kernelModel == MODEL_MONOLITHIC) ? "Monolithic-Kernels" : "Grid-Stride-Loop-Kernels";
+    const char *memCode = (memModel == MEM_UNIFIED) ? "u" : "s";
+    const char *modelCode = (kernelModel == MODEL_MONOLITHIC) ? "m" : "gs";
 
-    const char *label = (shortName != NULL) ? shortName : sweepTableTitle;
+    char appHeader[64];
+    snprintf(appHeader, sizeof(appHeader), "%s / %s", memTitle, modelTitle);
 
-    // Single run mode for profiling (nvprof / ncu)
+    if (!cfg.csvOutput) {
+        printf("\n================================================================================\n");
+        printf(" Configuration: %s\n", appHeader);
+        printf("================================================================================\n");
+    }
+
     if (cfg.singleBlockSize > 0) {
         if (strcmp(cfg.mode, "matrix") == 0) {
-            GpuBenchResult2D r = run_matrix_benchmark(
-                cfg.matRows, cfg.matCols, cfg.singleBlockSize, prop.multiProcessorCount, 0.0,
-                memModel, kernelModel, matInit, matAdd);
-            char singleTitle[128];
-            snprintf(singleTitle, sizeof(singleTitle), "Matrix Addition - %s", label);
-            print_single_run_2d(singleTitle, cfg.matRows, cfg.matCols, &r);
+            GpuBenchResult2D r = run_matrix_benchmark_avg(
+                cfg.matRows, cfg.matCols, cfg.singleBlockSize, prop.multiProcessorCount, cpuMatMs,
+                memModel, kernelModel, matInit, matAdd, cfg.numRuns);
+            if (cfg.csvOutput) {
+                printf("CSV,%s,%s,matrix,%d,%dx%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f,%s\n",
+                       memCode, modelCode, r.blockSize, r.gridDim.x, r.gridDim.y,
+                       r.initTimeMs, r.addTimeMs, r.memcpyTimeMs, r.totalGpuTimeMs,
+                       r.cpuTimeMs, r.speedup, r.verified ? "PASS" : "FAIL");
+            } else {
+                char title[256];
+                snprintf(title, sizeof(title), "Matrix Addition - %s", appHeader);
+                print_single_run_2d(title, cfg.matRows, cfg.matCols, &r, cfg.numRuns);
+            }
         } else {
-            GpuBenchResult1D r = run_vector_benchmark(
-                cfg.vecN, cfg.singleBlockSize, prop.multiProcessorCount, 0.0,
-                memModel, kernelModel, vecInit, vecAdd);
-            char singleTitle[128];
-            snprintf(singleTitle, sizeof(singleTitle), "Vector Addition - %s", label);
-            print_single_run_1d(singleTitle, cfg.vecN, &r);
+            GpuBenchResult1D r = run_vector_benchmark_avg(
+                cfg.vecN, cfg.singleBlockSize, prop.multiProcessorCount, cpuVecMs,
+                memModel, kernelModel, vecInit, vecAdd, cfg.numRuns);
+            if (cfg.csvOutput) {
+                printf("CSV,%s,%s,vector,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f,%s\n",
+                       memCode, modelCode, r.blockSize, r.numBlocks,
+                       r.initTimeMs, r.addTimeMs, r.memcpyTimeMs, r.totalGpuTimeMs,
+                       r.cpuTimeMs, r.speedup, r.verified ? "PASS" : "FAIL");
+            } else {
+                char title[256];
+                snprintf(title, sizeof(title), "Vector Addition - %s", appHeader);
+                print_single_run_1d(title, cfg.vecN, &r, cfg.numRuns);
+            }
         }
+        return;
+    }
+
+    // Sweep mode
+    if (strcmp(cfg.mode, "all") == 0 || strcmp(cfg.mode, "vector") == 0) {
+        GpuBenchResult1D vecResults[NUM_BLOCK_SIZES];
+        for (int i = 0; i < NUM_BLOCK_SIZES; i++) {
+            vecResults[i] = run_vector_benchmark_avg(
+                cfg.vecN, BLOCK_SIZES[i], prop.multiProcessorCount, cpuVecMs,
+                memModel, kernelModel, vecInit, vecAdd, cfg.numRuns);
+            if (cfg.csvOutput) {
+                printf("CSV,%s,%s,vector,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f,%s\n",
+                       memCode, modelCode, vecResults[i].blockSize, vecResults[i].numBlocks,
+                       vecResults[i].initTimeMs, vecResults[i].addTimeMs, vecResults[i].memcpyTimeMs,
+                       vecResults[i].totalGpuTimeMs, vecResults[i].cpuTimeMs, vecResults[i].speedup,
+                       vecResults[i].verified ? "PASS" : "FAIL");
+            }
+        }
+        if (!cfg.csvOutput) {
+            char tableTitle[256];
+            if (cfg.numRuns > 1) {
+                snprintf(tableTitle, sizeof(tableTitle), "%s (Average of %d runs)", appHeader, cfg.numRuns);
+            } else {
+                snprintf(tableTitle, sizeof(tableTitle), "%s", appHeader);
+            }
+            print_sweep_table_1d(tableTitle, (memModel == MEM_STANDARD), vecResults, NUM_BLOCK_SIZES);
+        }
+    }
+
+    if (strcmp(cfg.mode, "all") == 0 || strcmp(cfg.mode, "matrix") == 0) {
+        GpuBenchResult2D matResults[NUM_BLOCK_SIZES];
+        for (int i = 0; i < NUM_BLOCK_SIZES; i++) {
+            matResults[i] = run_matrix_benchmark_avg(
+                cfg.matRows, cfg.matCols, BLOCK_SIZES[i], prop.multiProcessorCount, cpuMatMs,
+                memModel, kernelModel, matInit, matAdd, cfg.numRuns);
+            if (cfg.csvOutput) {
+                printf("CSV,%s,%s,matrix,%d,%dx%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f,%s\n",
+                       memCode, modelCode, matResults[i].blockSize, matResults[i].gridDim.x, matResults[i].gridDim.y,
+                       matResults[i].initTimeMs, matResults[i].addTimeMs, matResults[i].memcpyTimeMs,
+                       matResults[i].totalGpuTimeMs, matResults[i].cpuTimeMs, matResults[i].speedup,
+                       matResults[i].verified ? "PASS" : "FAIL");
+            }
+        }
+        if (!cfg.csvOutput) {
+            char tableTitle[256];
+            if (cfg.numRuns > 1) {
+                snprintf(tableTitle, sizeof(tableTitle), "%s (Average of %d runs)", appHeader, cfg.numRuns);
+            } else {
+                snprintf(tableTitle, sizeof(tableTitle), "%s", appHeader);
+            }
+            print_sweep_table_2d(tableTitle, (memModel == MEM_STANDARD), matResults, NUM_BLOCK_SIZES);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// High-Level Unified Dispatcher
+// ---------------------------------------------------------------------------
+template <typename VecInitM, typename VecAddM, typename MatInitM, typename MatAddM,
+          typename VecInitG, typename VecAddG, typename MatInitG, typename MatAddG>
+int run_benchmark_dispatcher(int argc, char **argv,
+                             VecInitM vecInitM, VecAddM vecAddM, MatInitM matInitM, MatAddM matAddM,
+                             VecInitG vecInitG, VecAddG vecAddG, MatInitG matInitG, MatAddG matAddG) {
+    AppConfig cfg = parse_app_args(argc, argv);
+    if (cfg.showHelp) {
+        print_usage(argv[0]);
         return 0;
     }
 
-    // Full comparison sweep mode
-    printf("\n>>> Measuring Serial CPU Baseline for Vector Addition (n = %zu)...\n", cfg.vecN);
-    double cpuVecMs = measure_cpu_vector_baseline(cfg.vecN);
-    printf("CPU Serial Elapsed Time (vectorInit + vectorAdd): %.3f ms\n", cpuVecMs);
-
-    GpuBenchResult1D vecResults[NUM_BLOCK_SIZES];
-    for (int i = 0; i < NUM_BLOCK_SIZES; i++) {
-        vecResults[i] = run_vector_benchmark(
-            cfg.vecN, BLOCK_SIZES[i], prop.multiProcessorCount, cpuVecMs,
-            memModel, kernelModel, vecInit, vecAdd);
+    CUDA_CHECK(cudaSetDevice(cfg.devId));
+    cudaDeviceProp prop;
+    CUDA_CHECK(cudaGetDeviceProperties(&prop, cfg.devId));
+    if (!cfg.csvOutput) {
+        prop = print_app_header("Lab 1: First CUDA Applications", cfg.devId);
     }
-    print_sweep_table_1d(sweepTableTitle, (memModel == MEM_STANDARD), vecResults, NUM_BLOCK_SIZES);
 
-    printf("\n>>> Measuring Serial CPU Baseline for Matrix Addition (%zu x %zu)...\n", cfg.matRows, cfg.matCols);
-    double cpuMatMs = measure_cpu_matrix_baseline(cfg.matRows, cfg.matCols);
-    printf("CPU Serial Elapsed Time (matrixInit + matrixAdd): %.3f ms\n", cpuMatMs);
-
-    GpuBenchResult2D matResults[NUM_BLOCK_SIZES];
-    for (int i = 0; i < NUM_BLOCK_SIZES; i++) {
-        matResults[i] = run_matrix_benchmark(
-            cfg.matRows, cfg.matCols, BLOCK_SIZES[i], prop.multiProcessorCount, cpuMatMs,
-            memModel, kernelModel, matInit, matAdd);
+    // Measure CPU baselines once if in sweep mode
+    double cpuVecMs = 0.0;
+    double cpuMatMs = 0.0;
+    if (cfg.singleBlockSize < 0) {
+        if (strcmp(cfg.mode, "all") == 0 || strcmp(cfg.mode, "vector") == 0) {
+            if (!cfg.csvOutput) {
+                printf("\n>>> Measuring Serial CPU Baseline for Vector Addition (n = %zu)...\n", cfg.vecN);
+            }
+            cpuVecMs = measure_cpu_vector_baseline(cfg.vecN);
+            if (!cfg.csvOutput) {
+                printf("CPU Serial Elapsed Time (vectorInit + vectorAdd): %.3f ms\n", cpuVecMs);
+            }
+        }
+        if (strcmp(cfg.mode, "all") == 0 || strcmp(cfg.mode, "matrix") == 0) {
+            if (!cfg.csvOutput) {
+                printf("\n>>> Measuring Serial CPU Baseline for Matrix Addition (%zu x %zu)...\n", cfg.matRows, cfg.matCols);
+            }
+            cpuMatMs = measure_cpu_matrix_baseline(cfg.matRows, cfg.matCols);
+            if (!cfg.csvOutput) {
+                printf("CPU Serial Elapsed Time (matrixInit + matrixAdd): %.3f ms\n", cpuMatMs);
+            }
+        }
     }
-    print_sweep_table_2d(sweepTableTitle, (memModel == MEM_STANDARD), matResults, NUM_BLOCK_SIZES);
+
+    if (cfg.csvOutput) {
+        printf("CSV_HEADER,mem,kernel,op,blockSize,gridSize,initMs,addMs,memcpyMs,totalGpuMs,cpuMs,speedup,status\n");
+    }
+
+    MemoryModel mems[2];
+    int numMems = 0;
+    if (cfg.memModel == MEM_ALL) {
+        mems[0] = MEM_UNIFIED;
+        mems[1] = MEM_STANDARD;
+        numMems = 2;
+    } else {
+        mems[0] = cfg.memModel;
+        numMems = 1;
+    }
+
+    KernelModel models[2];
+    int numModels = 0;
+    if (cfg.kernelModel == MODEL_ALL) {
+        models[0] = MODEL_MONOLITHIC;
+        models[1] = MODEL_GRID_STRIDE;
+        numModels = 2;
+    } else {
+        models[0] = cfg.kernelModel;
+        numModels = 1;
+    }
+
+    for (int mi = 0; mi < numMems; mi++) {
+        for (int ki = 0; ki < numModels; ki++) {
+            MemoryModel m = mems[mi];
+            KernelModel k = models[ki];
+            if (k == MODEL_MONOLITHIC) {
+                run_single_suite(cfg, prop, m, k, vecInitM, vecAddM, matInitM, matAddM, cpuVecMs, cpuMatMs);
+            } else {
+                run_single_suite(cfg, prop, m, k, vecInitG, vecAddG, matInitG, matAddG, cpuVecMs, cpuMatMs);
+            }
+        }
+    }
 
     return 0;
 }
 
-// Convenient overload with 2 titles
-template <typename VecInitKernel, typename VecAddKernel, typename MatInitKernel, typename MatAddKernel>
-static inline int run_benchmark(int argc, char **argv,
-                                const char *appHeaderTitle,
-                                const char *sweepTableTitle,
-                                MemoryModel memModel,
-                                KernelModel kernelModel,
-                                VecInitKernel vecInit,
-                                VecAddKernel vecAdd,
-                                MatInitKernel matInit,
-                                MatAddKernel matAdd) {
-    return run_benchmark(argc, argv, appHeaderTitle, sweepTableTitle, sweepTableTitle,
-                         memModel, kernelModel, vecInit, vecAdd, matInit, matAdd);
-}
-
 #endif // LAB1_BENCHMARK_H
-
