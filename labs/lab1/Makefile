@@ -11,9 +11,8 @@
 #   make clean        - Removes compiled binaries
 # ==============================================================================
 
-# Compiler selection: prefer system nvcc or CUDA_HOME if set
 CUDA_HOME ?= /usr/local/cuda
-NVCC      := $(shell which nvcc 2>/dev/null || echo $(CUDA_HOME)/bin/nvcc)
+NVCC      ?= $(shell test -x $(CUDA_HOME)/bin/nvcc && echo $(CUDA_HOME)/bin/nvcc || which nvcc 2>/dev/null)
 
 # Base compiler flags
 NVCC_FLAGS ?= -O3 -std=c++11 -lineinfo
@@ -60,7 +59,7 @@ rtx4080:
 universal:
 	$(MAKE) ARCH=universal NVCC=/usr/bin/nvcc
 
-%: %.cu common.h
+%: %.cu common.h benchmark.h
 	@echo "Compiling $< -> $@ ($(GENCODE))..."
 	$(NVCC) $(NVCC_FLAGS) $(GENCODE) $< -o $@
 

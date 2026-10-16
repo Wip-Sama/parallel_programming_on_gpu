@@ -48,6 +48,12 @@ Section 4 states: `(nrows, ncols) = (n/2, n), being n the number of vector eleme
 - To maintain the requested $(n_{matrix}/2, n_{matrix})$ aspect ratio while fitting safely in GPU VRAM (4 GB on GTX 980, 12 GB on RTX 4080), matrix addition defaults to **$nrows = 2048, ncols = 4096$** ($8,388,608$ doubles, 64 MB per matrix, 192 MB total).
 - Custom matrix dimensions can also be supplied via command line arguments.
 
+### E. Clean Modular Architecture (Common Benchmark Utility)
+To keep each `.cu` file minimal, uncluttered, and strictly focused on its CUDA kernels:
+- **`common.h`:** Contains error-checking macros (`CUDA_CHECK`), CPU reference algorithms, data structures (`GpuBenchResult1D/2D`), verification helpers, and table formatting routines.
+- **`benchmark.h`:** Provides the generic execution harness (`run_vector_benchmark`, `run_matrix_benchmark`, and `run_benchmark`) handling CUDA event timers, memory allocation (managed vs standard + DtoH copy), grid dimension calculations, and single-run / sweep reporting.
+- **Implementation Files (`*.cu`):** Contain only the GPU kernels (`vectorInit`, `vectorAdd`, `matrixInit`, `matrixAdd`) and a clean single-line `main()` invocation delegating to `run_benchmark()`.
+
 ---
 
 ## 3. Building the Programs
