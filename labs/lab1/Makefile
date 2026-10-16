@@ -60,7 +60,7 @@ rtx4080:
 universal:
 	$(MAKE) ARCH=universal NVCC=/usr/bin/nvcc
 
-%: %.cu
+%: %.cu common.h
 	@echo "Compiling $< -> $@ ($(GENCODE))..."
 	$(NVCC) $(NVCC_FLAGS) $(GENCODE) $< -o $@
 
