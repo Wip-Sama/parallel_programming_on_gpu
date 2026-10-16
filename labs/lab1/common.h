@@ -10,7 +10,7 @@
 #include <cuda_runtime.h>
 
 // ---------------------------------------------------------------------------
-// Error Checking Macro for checking even cuda dignity
+// Error checking macro for checking even cuda dignity
 // ---------------------------------------------------------------------------
 #define CUDA_CHECK(call) cuda_check_error(call, #call, __FILE__, __LINE__)
 
