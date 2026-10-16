@@ -6,14 +6,14 @@
 
 ---
 
-## 1. Overview & Implementations
+## 1. Overview & Architecture
 
-This directory contains the unified CUDA implementation, multi-architecture compilation system, and automated multi-run benchmark suite for **Lab 1**.
+This directory contains the refactored CUDA implementation, compilation system, and automated multi-run benchmark suite for **Lab 1**.
 
-Rather than maintaining four separate files to vary two parameters, all four implementations and their corresponding kernels are unified into a single modular executable (`./lab1`) driven directly by command-line arguments:
+The CUDA binary (`./lab1`) executes a single chosen configuration directly with minimal overhead, suitable for direct execution or profiling tools (such as `nvprof` and `ncu`). All parameter sweeps, multi-run repetitions, and statistical comparisons are orchestrated by Python (`average_benchmarks.py`).
 
 ```bash
-./lab1 <u|s> <m|gs> <vector|matrix> [size] [options]
+./lab1 <u|s> <m|gs> <vector|matrix> [blockSize] [options]
 ```
 
 ### The 4 Implementations
@@ -25,95 +25,81 @@ Rather than maintaining four separate files to vary two parameters, all four imp
 | **`s` (Standard)** | **`m` (Monolithic)** | `vector` / `matrix` | `vectorInit`, `vectorAdd`, `matrixInit`, `matrixAdd` | Explicit host/device allocations and `cudaMemcpy` (DtoH) transfer |
 | **`s` (Standard)** | **`gs` (Grid-Stride)** | `vector` / `matrix` | `vectorInitGSL`, `vectorAddGSL`, `matrixInitGSL`, `matrixAddGSL` | Explicit memory with decoupled SM-scaled grid loops |
 
-> [!NOTE]
-> For backward compatibility with assignment scripts and profilers, symlinks (`unified_monolithic`, `unified_grid_stride`, `standard_monolithic`, `standard_grid_stride`) automatically point to `./lab1` and preset the memory and kernel models based on their invocation name.
-
 ---
 
 ## 2. Command Line Interface: `./lab1`
 
 ### Syntax
 ```bash
-./lab1 <u|s> <m|gs> <vector|matrix> [size] [options]
+./lab1 <u|s> <m|gs> <vector|matrix> [blockSize] [options]
 ```
 
-### Positional Arguments
+### Positional Arguments (Single Configuration)
 1. **Memory Model (`u` or `s`):**
    - `u` / `unified`: Unified Memory (`cudaMallocManaged`)
-   - `s` / `standard`: Standard Memory (`cudaMalloc` + host `malloc` + `cudaMemcpy` DtoH)
-   - `all`: Run all memory models
+   - `s` / `standard`: Standard Memory (`cudaMalloc` + host `malloc` + explicit `cudaMemcpy` DtoH)
 2. **Kernel Execution Model (`m` or `gs`):**
    - `m` / `monolithic`: Monolithic 1-to-1 thread mapping
    - `gs` / `grid_stride`: Grid-Stride Loops (`stride = gridDim * blockDim`, grid scaled to $32 \times \text{numSMs}$)
-   - `all`: Run all kernel models
 3. **Operation (`vector` or `matrix`):**
    - `vector` / `vec` / `v`: Double-precision vector addition ($n = 2^{24} = 16,777,216$ elements, 128 MB/vector)
    - `matrix` / `mat` / `m`: Double-precision matrix addition ($2048 \times 4096 = 8,388,608$ elements, 64 MB/matrix)
-   - `all`: Run both operations
-4. **`[size]` (Optional Block Size):**
-   - `32`, `64`, `128`, `256`, `512`, `1024`: Run single benchmark with this block size
-   - `all` (or omitted): Automatically sweep all 6 block sizes
+4. **`[blockSize]` (Optional Block Size):**
+   - `32`, `64`, `128`, `256`, `512`, `1024`: Thread block size (default: 256)
 
 ### Options
-- `-n <N>`, `--runs <N>`: Repeat benchmark $N$ times and average the timings directly in C++/CUDA (default: 1)
 - `--device <id>`: Select CUDA device ID (default: 0)
-- `--csv`: Output pure CSV format for automated benchmarking and scripting
-- `--vec-n <N>`: Override default vector size
-- `--mat-rows <R>`, `--mat-cols <C>`: Override default matrix dimensions
+- `--csv`: Output pure CSV line for automated scripting and benchmarking
 - `-h`, `--help`: Display usage and options
 
-### Execution Examples
+### Single-Run Examples (Ideal for Profiling)
 ```bash
-# 1. Single runs (ideal for profilers like nvprof or ncu):
-./lab1 u m vector 256        # Unified, monolithic, vector addition, block size 256
+./lab1 u m vector 256        # Unified memory, monolithic, vector addition, block size 256
 ./lab1 s gs matrix 512       # Standard memory, grid-stride loop, matrix addition, block size 512
-
-# 2. In-engine multi-run averaging:
-./lab1 s m vector 256 -n 5   # Run 5 times and report average times and speedup
-
-# 3. Automated block size sweep:
-./lab1 u gs vector           # Sweeps 32, 64, 128, 256, 512, 1024 for unified grid-stride vector
-./lab1 s m matrix            # Sweeps all block sizes for standard monolithic matrix
-
-# 4. Full comparison suite:
-./lab1 all                   # Runs all 4 configurations for vector and matrix addition
+./lab1 u gs vector 1024      # Unified memory, grid-stride loop, vector addition, block size 1024
 ```
 
 ---
 
-## 3. Automated Multi-Run Averaging Suite (`average_benchmarks.py`)
+## 3. Automated Multi-Run Benchmark Suite (`average_benchmarks.py`)
 
-A dedicated Python benchmark runner (`average_benchmarks.py`) is provided to run each configuration $N$ times, compute statistical metrics, print comparison tables, and generate reports.
+All parameter sweeps, repetitions, and comparisons are handled by `average_benchmarks.py`:
 
-### Usage
 ```bash
-# Run each configuration 5 times across all block sizes and operations:
-./average_benchmarks.py -n 5
+# Run full benchmark suite across all configurations, operations, and block sizes (5 runs each):
+python3 average_benchmarks.py -n 5
 
-# Or use the convenient shell wrapper:
-./run_averages.sh 5
+# Or use the shell helper:
+./run_comparisons.sh 5
 
-# Test a specific block size across all 4 configurations (5 runs each):
-./average_benchmarks.py -n 5 -s 256
+# Test a specific block size across all 4 configurations:
+python3 average_benchmarks.py -n 5 -s 256
 
 # Test only vector addition:
-./average_benchmarks.py -n 5 --op vector
+python3 average_benchmarks.py -n 5 --op vector
 
-# Test only a specific configuration:
-./average_benchmarks.py -n 5 --mem u --model gs --op vector
+# Test only unified memory with grid-stride loops:
+python3 average_benchmarks.py -n 5 --mem u --model gs
 ```
 
+### Metrics Reported
+- **`Init (ms)`**: GPU time for 3x initialization kernel launches.
+- **`Add (ms)`**: GPU time for the 1x vector/matrix addition kernel launch.
+- **`Memcpy (ms)`**: Explicit `cudaMemcpy` (DtoH) transfer time for Standard Memory (0.000 ms for Unified Memory).
+- **`Device Time (ms)`**: Actual time the GPU device spent working (kernels + explicit transfers via CUDA events).
+- **`Total Run Time (ms)`**: Total end-to-end execution time including host verification. For Unified Memory, this captures on-demand page fault migrations across the PCIe bus when the host accesses data.
+- **`Status`**: `PASS` if verified ($C[i] = 3.0$), `FAIL` otherwise.
+
 ### Generated Artifacts
-- **Terminal Display:** High-resolution formatted tables showing `Init (ms)`, `Add (ms)`, `Memcpy (ms)`, `Total GPU (ms)` ($\text{mean} \pm \text{stddev}$), `Speedup`, and `Status` (PASS/FAIL).
-- **Summary Matrix:** Displays the optimal block size and peak speedup for each of the 4 implementations.
-- **CSV Data File:** Saves raw and averaged statistics to `benchmark_results_averaged.csv`.
-- **Markdown Report:** Generates an executive findings report to `benchmark_findings.md`.
+- **Console Tables:** Formatted summary tables showing means and standard deviations ($\text{mean} \pm \text{std}$).
+- **CSV Data File:** Exported to `benchmark_results_averaged.csv`.
+- **Markdown Report:** Comprehensive report and architectural analysis exported to `benchmark_findings.md`.
 
 ---
 
 ## 4. Building the Project
 
-A universal `Makefile` is included:
+A clean `Makefile` is provided:
 
 ```bash
 # Auto-detect CUDA compiler and architecture:
@@ -128,6 +114,9 @@ make rtx4080
 # Universal fatbin build (sm_52 + compute_52 PTX):
 make universal
 
+# Run a quick test:
+make run
+
 # Clean binaries:
 make clean
 ```
@@ -136,27 +125,17 @@ make clean
 
 ## 5. Profiling with `nvprof` and `ncu`
 
-### On the Dual GTX 980 Machine (CUDA 11.4):
-Per the assignment requirements, use `nvprof` on single-run executions:
-
+### NVIDIA Profiler (`nvprof`) on CUDA $\le 11.x$ (e.g., GTX 980):
 ```bash
 # Profile Vector Addition with block size 256:
 nvprof ./lab1 s m vector 256
 
 # Profile Matrix Addition with block size 256:
-nvprof ./lab1 s m matrix 256
-
-# Or using the legacy binary symlink:
-nvprof ./standard_monolithic vector 256
+nvprof ./lab1 s gs matrix 256
 ```
 
-`nvprof` outputs the exact activity calls:
-- `vectorInit` / `vectorInitGSL` (Calls: 3)
-- `vectorAdd` / `vectorAddGSL` (Calls: 1)
-- `[CUDA memcpy DtoH]` (Calls: 1, for Standard Memory)
-
-### On Modern GPUs (Compute Capability $\ge 8.0$, e.g., RTX 4080):
-Use NVIDIA Nsight Compute (`ncu`) or the built-in high-precision CUDA event timers:
+### NVIDIA Nsight Compute (`ncu`) on modern GPUs (e.g., RTX 4080):
 ```bash
 ncu --target-processes all ./lab1 s m vector 256
+ncu --target-processes all ./lab1 u gs vector 256
 ```

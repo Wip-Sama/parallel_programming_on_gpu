@@ -7,7 +7,8 @@
 #   make gtx980       - Compiles specifically for NVIDIA GTX 980 (Maxwell, sm_52, CUDA 11.4)
 #   make rtx4080      - Compiles specifically for NVIDIA RTX 4080 (Ada Lovelace, sm_89, CUDA 12/13)
 #   make universal    - Compiles with fatbin (sm_52 + compute_52 PTX) for cross-compatibility
-#   make run          - Runs all 4 benchmarks sequentially
+#   make run          - Runs a single test execution (./lab1 u m vector 256)
+#   make bench        - Runs full benchmark suite via average_benchmarks.py
 #   make clean        - Removes compiled binaries and temporary benchmark data
 # ==============================================================================
 
@@ -40,19 +41,14 @@ else ifeq ($(ARCH),auto)
 endif
 
 TARGETS := lab1
-LEGACY_ALIASES := unified_monolithic unified_grid_stride standard_monolithic standard_grid_stride
 
-.PHONY: all clean run gtx980 rtx4080 universal help
+.PHONY: all clean run bench gtx980 rtx4080 universal help
 
 all: $(TARGETS)
 
-lab1: lab1.cu common.h benchmark.h
+lab1: lab1.cu common.h
 	@echo "Compiling $< -> $@ ($(GENCODE))..."
 	$(NVCC) $(NVCC_FLAGS) $(GENCODE) $< -o $@
-	@ln -sf lab1 unified_monolithic
-	@ln -sf lab1 unified_grid_stride
-	@ln -sf lab1 standard_monolithic
-	@ln -sf lab1 standard_grid_stride
 
 gtx980:
 	$(MAKE) ARCH=sm_52
@@ -63,11 +59,14 @@ rtx4080:
 universal:
 	$(MAKE) ARCH=universal NVCC=/usr/bin/nvcc
 
-run: all
-	./lab1 all
+run: lab1
+	./lab1 u m vector 256
+
+bench: lab1
+	python3 average_benchmarks.py
 
 clean:
-	rm -f $(TARGETS) $(LEGACY_ALIASES) *.o *.prof
+	rm -f $(TARGETS) *.o *.prof
 
 help:
 	@echo "Available commands:"
@@ -75,5 +74,6 @@ help:
 	@echo "  make gtx980       - Compile for GTX 980 (sm_52, Maxwell, CUDA 11.4)"
 	@echo "  make rtx4080      - Compile for RTX 4080 (sm_89, Ada, CUDA 13.0)"
 	@echo "  make universal    - Compile with sm_52 + PTX to run on both GPUs"
-	@echo "  make run          - Run full benchmark sweep with ./lab1 all"
+	@echo "  make run          - Run single test configuration (./lab1 u m vector 256)"
+	@echo "  make bench        - Run automated Python multi-run benchmark suite"
 	@echo "  make clean        - Remove binaries and build artifacts"
