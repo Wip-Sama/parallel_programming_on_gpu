@@ -60,17 +60,29 @@ __global__ void color_to_gray_cuda(
     int height
 ) {
     
-// Stride along the X dime  nsion (columns)
     int strideX = blockDim.x * gridDim.x;
-    // Stride along the Y dimension (rows)
     int strideY = blockDim.y * gridDim.y;
 
-    // Loop through Y (rows) in the outer loop
+    // We take the block at position blockIdx
+    // We take teh dimnesion of the block
+    // We take out thread position in the block
+    // pos += stridePos make jumps of size (blockDim * gridDim) 
+    //      to cover the specific element of out thread in each tile
+    // Keep in mind that a block is a CUDA execution concept, just a group of threads
     for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < height; y += strideY) {
-        // Loop through X (columns) in the inner loop
         for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < width; x += strideX) {
             int idx = y * width + x;
-            gray[idx] = 0.21f * rgb[3 * idx] + 0.71f * rgb[ 3 * idx + 1] + 0.07f * rgb[3 * idx + 2];
+            int rgb_idx = 3 * idx;
+
+            float val = 0.21f * rgb[rgb_idx] + 
+                        0.71f * rgb[rgb_idx + 1] + 
+                        0.07f * rgb[rgb_idx + 2];
+
+            gray[idx] = static_cast<unsigned char>(val);
+
+            // Alternative implementation (commented out for clarity)
+            // int idx = y * width + x;
+            // gray[idx] = 0.21f * rgb[3 * idx] + 0.71f * rgb[ 3 * idx + 1] + 0.07f * rgb[3 * idx + 2];
         }
     }
 }
@@ -98,35 +110,65 @@ void run_gpu(
     int block_dim_size, 
     GpuTiming *timing
 ) {
+    // Calculate bytes using size_t to prevent integer overflow
+    size_t rgb_bytes  = static_cast<size_t>(width) * height * 3 * sizeof(unsigned char);
+    size_t gray_bytes = static_cast<size_t>(width) * height * sizeof(unsigned char);
+
+    // Set block & grid dimensions
+    // Note: CUDA blocks cannot exceed 1024 threads total (block_dim_size must be <= 32)
     timing->blockDim = dim3(block_dim_size, block_dim_size);
     timing->gridDim = dim3(
-        (width + block_dim_size - 1) / block_dim_size,
+        (width  + block_dim_size - 1) / block_dim_size,
         (height + block_dim_size - 1) / block_dim_size
     );
 
+    // Set up CUDA Events for precise GPU timing
+    cudaEvent_t start_total, stop_total;
+    cudaEvent_t start_compute, stop_compute;
+    CUDA_CHECK(cudaEventCreate(&start_total));
+    CUDA_CHECK(cudaEventCreate(&stop_total));
+    CUDA_CHECK(cudaEventCreate(&start_compute));
+    CUDA_CHECK(cudaEventCreate(&stop_compute));
+
+    // Start total timer (includes transfers + kernel)
+    CUDA_CHECK(cudaEventRecord(start_total));
+
+    // Allocate device memory
     unsigned char *d_rgb = nullptr;
     unsigned char *d_gray = nullptr;
+    CUDA_CHECK(cudaMalloc((void**)&d_rgb, rgb_bytes));
+    CUDA_CHECK(cudaMalloc((void**)&d_gray, gray_bytes));
 
-    CUDA_CHECK(cudaMalloc((void**)&d_rgb, width * height * 3 * sizeof(unsigned char)));
-    CUDA_CHECK(cudaMalloc((void**)&d_gray, width * height * sizeof(unsigned char)));
+    // Copy memory to GPU
+    CUDA_CHECK(cudaMemcpy(d_rgb, h_rgb, rgb_bytes, cudaMemcpyHostToDevice));
 
-    CUDA_CHECK(cudaMemcpy(d_rgb, h_rgb, width * height * 3 * sizeof(unsigned char), cudaMemcpyHostToDevice));
-
+    // Start compute timer (kernel execution only)
+    CUDA_CHECK(cudaEventRecord(start_compute));
     color_to_gray_cuda<<<timing->gridDim, timing->blockDim>>>(d_rgb, d_gray, width, height);
-
-    CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_CHECK(cudaGetLastError());
     
-    CUDA_CHECK(cudaMemcpy(h_gray, d_gray, width * height * sizeof(unsigned char), cudaMemcpyDeviceToHost));
+    // Stop compute timer
+    // NOTE: codaDeviceSyncronize() Invalidate a bit the timers
+    //      because it waits for the CPU to wake and sent the retrive time command
+    CUDA_CHECK(cudaEventRecord(stop_compute));
+    CUDA_CHECK(cudaEventSynchronize(stop_compute));
 
+    // Retrive computed data from GPU
+    CUDA_CHECK(cudaMemcpy(h_gray, d_gray, gray_bytes, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaEventRecord(stop_total));
+
+    // Calculate elapsed times in milliseconds
+    CUDA_CHECK(cudaEventElapsedTime(&timing->computeMs, start_compute, stop_compute));
+    CUDA_CHECK(cudaEventElapsedTime(&timing->totalMs, start_total, stop_total));
+
+    // Free resources and compute timings
     CUDA_CHECK(cudaFree(d_rgb));
     CUDA_CHECK(cudaFree(d_gray));
 
-    // TODO: Allocate device memory (cudaMalloc)
-    // TODO: Time and execute Host-to-Device transfer (cudaMemcpy HtoD)
-    // TODO: Launch kernel (color_to_gray_cuda) and time with CUDA events
-    // TODO: Time and execute Device-to-Host transfer (cudaMemcpy DtoH)
-    // TODO: Compute timing->computeMs and timing->totalMs
-    // TODO: Free device memory (cudaFree)
+    CUDA_CHECK(cudaEventDestroy(start_total));
+    CUDA_CHECK(cudaEventDestroy(stop_total));
+    CUDA_CHECK(cudaEventDestroy(start_compute));
+    CUDA_CHECK(cudaEventDestroy(stop_compute));
 }
 
 // ---------------------------------------------------------------------------
