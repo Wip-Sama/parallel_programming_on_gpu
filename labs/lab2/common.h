@@ -234,7 +234,10 @@ static inline void save_outputs(const Config &cfg, int width, int height,
         stbi_write_png(cfg.outputPath, width, height, 1, h_gray_gpu, width);
     } else if (cfg.mode == MODE_BOTH) {
         if (h_gray_cpu) stbi_write_png("output_cpu.png", width, height, 1, h_gray_cpu, width);
-        if (h_gray_gpu) stbi_write_png("output_gpu.png", width, height, 1, h_gray_gpu, width);
+        if (h_gray_gpu) {
+            stbi_write_png("output_gpu.png", width, height, 1, h_gray_gpu, width);
+            stbi_write_png(cfg.outputPath, width, height, 1, h_gray_gpu, width);
+        }
     }
 }
 

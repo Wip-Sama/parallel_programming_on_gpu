@@ -123,52 +123,49 @@ void run_gpu(
     );
 
     // Set up CUDA Events for precise GPU timing
-    cudaEvent_t start_total, stop_total;
-    cudaEvent_t start_compute, stop_compute;
-    CUDA_CHECK(cudaEventCreate(&start_total));
-    CUDA_CHECK(cudaEventCreate(&stop_total));
-    CUDA_CHECK(cudaEventCreate(&start_compute));
-    CUDA_CHECK(cudaEventCreate(&stop_compute));
+    cudaEvent_t ev_start, ev_stop;
+    CUDA_CHECK(cudaEventCreate(&ev_start));
+    CUDA_CHECK(cudaEventCreate(&ev_stop));
 
-    // Start total timer (includes transfers + kernel)
-    CUDA_CHECK(cudaEventRecord(start_total));
-
-    // Allocate device memory
+    // 1. Device memory allocation (timed with high-resolution wall-clock)
+    double t_alloc_0 = get_wall_time_ms();
     unsigned char *d_rgb = nullptr;
     unsigned char *d_gray = nullptr;
     CUDA_CHECK(cudaMalloc((void**)&d_rgb, rgb_bytes));
     CUDA_CHECK(cudaMalloc((void**)&d_gray, gray_bytes));
+    timing->allocMs = (float)(get_wall_time_ms() - t_alloc_0);
 
-    // Copy memory to GPU
+    // 2. Host-to-Device transfer
+    CUDA_CHECK(cudaEventRecord(ev_start));
     CUDA_CHECK(cudaMemcpy(d_rgb, h_rgb, rgb_bytes, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaEventRecord(ev_stop));
+    CUDA_CHECK(cudaEventSynchronize(ev_stop));
+    CUDA_CHECK(cudaEventElapsedTime(&timing->htodMs, ev_start, ev_stop));
 
-    // Start compute timer (kernel execution only)
-    CUDA_CHECK(cudaEventRecord(start_compute));
+    // 3. Kernel Execution
+    CUDA_CHECK(cudaEventRecord(ev_start));
     color_to_gray_cuda<<<timing->gridDim, timing->blockDim>>>(d_rgb, d_gray, width, height);
+    CUDA_CHECK(cudaEventRecord(ev_stop));
+    CUDA_CHECK(cudaEventSynchronize(ev_stop));
     CUDA_CHECK(cudaGetLastError());
-    
-    // Stop compute timer
-    // NOTE: codaDeviceSyncronize() Invalidate a bit the timers
-    //      because it waits for the CPU to wake and sent the retrive time command
-    CUDA_CHECK(cudaEventRecord(stop_compute));
-    CUDA_CHECK(cudaEventSynchronize(stop_compute));
+    CUDA_CHECK(cudaEventElapsedTime(&timing->kernelMs, ev_start, ev_stop));
 
-    // Retrive computed data from GPU
+    // 4. Device-to-Host transfer
+    CUDA_CHECK(cudaEventRecord(ev_start));
     CUDA_CHECK(cudaMemcpy(h_gray, d_gray, gray_bytes, cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaEventRecord(stop_total));
+    CUDA_CHECK(cudaEventRecord(ev_stop));
+    CUDA_CHECK(cudaEventSynchronize(ev_stop));
+    CUDA_CHECK(cudaEventElapsedTime(&timing->dtohMs, ev_start, ev_stop));
 
-    // Calculate elapsed times in milliseconds
-    CUDA_CHECK(cudaEventElapsedTime(&timing->computeMs, start_compute, stop_compute));
-    CUDA_CHECK(cudaEventElapsedTime(&timing->totalMs, start_total, stop_total));
+    // Compute composite timings
+    timing->computeMs = timing->htodMs + timing->kernelMs + timing->dtohMs;
+    timing->totalMs   = timing->allocMs + timing->computeMs;
 
-    // Free resources and compute timings
+    // Free resources and cleanup events
     CUDA_CHECK(cudaFree(d_rgb));
     CUDA_CHECK(cudaFree(d_gray));
-
-    CUDA_CHECK(cudaEventDestroy(start_total));
-    CUDA_CHECK(cudaEventDestroy(stop_total));
-    CUDA_CHECK(cudaEventDestroy(start_compute));
-    CUDA_CHECK(cudaEventDestroy(stop_compute));
+    CUDA_CHECK(cudaEventDestroy(ev_start));
+    CUDA_CHECK(cudaEventDestroy(ev_stop));
 }
 
 // ---------------------------------------------------------------------------
