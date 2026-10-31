@@ -1,2 +1,26 @@
+# Images
 *.png
+
+# Python bytecode & cache
 __pycache__/
+*.py[cod]
+
+# Compiled binaries and build artifacts
+*.o
+*.obj
+*.so
+*.dylib
+*.out
+*.prof
+
+# Lab binaries
+/labs/lab1/lab1
+/labs/lab2/lab2
+/labs/lab3/lab3
+/labs/lab4/lab4
+/labs/lab5/lab5
+/labs/lab6/lab6
+/labs/lab7/lab7
+/labs/lab8/lab8
+/labs/lab9/lab9
+/labs/lab10/lab10
