@@ -43,7 +43,6 @@ __global__ void matrixAdd(const double *A, const double *B, double *C, size_t nr
 
 // ---------------------------------------------------------------------------
 // 2. CUDA Grid-Stride Loop Kernels (stride = gridDim * blockDim)
-// Ref: Mark Harris, "CUDA Pro Tip: Write Flexible Kernels with Grid-Stride Loops"
 // ---------------------------------------------------------------------------
 __global__ void vectorInitGSL(double *data, double val, size_t n) {
     size_t tid = (size_t)blockIdx.x * blockDim.x + threadIdx.x;

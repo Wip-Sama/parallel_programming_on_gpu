@@ -16,7 +16,7 @@ CUDA_HOME ?= /usr/local/cuda
 NVCC      ?= $(shell test -x $(CUDA_HOME)/bin/nvcc && echo $(CUDA_HOME)/bin/nvcc || which nvcc 2>/dev/null)
 
 # Base compiler flags
-NVCC_FLAGS ?= -O3 -std=c++11 -lineinfo
+NVCC_FLAGS ?= -O3 -std=c++11 -lineinfo -I. -I.. -I../common -I../common/include -I../../common/include
 
 # Detect default architecture if not provided
 # GTX 980 uses sm_52; RTX 4080 uses sm_89
@@ -42,7 +42,7 @@ endif
 
 TARGETS := lab1
 
-.PHONY: all clean run bench gtx980 rtx4080 universal help
+.PHONY: all clean run bench plots gtx980 rtx4080 universal help
 
 all: $(TARGETS)
 
@@ -63,7 +63,10 @@ run: lab1
 	./lab1 u m vector 256
 
 bench: lab1
-	python3 average_benchmarks.py
+	python3 scripts/average_benchmarks.py
+
+plots:
+	python3 scripts/generate_plots.py
 
 clean:
 	rm -f $(TARGETS) *.o *.prof

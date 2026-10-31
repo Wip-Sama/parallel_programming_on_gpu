@@ -9,18 +9,8 @@
 #include <time.h>
 #include <cuda_runtime.h>
 
-// ---------------------------------------------------------------------------
-// Error checking macro for checking even cuda dignity
-// ---------------------------------------------------------------------------
-#define CUDA_CHECK(call) cuda_check_error(call, #call, __FILE__, __LINE__)
-
-inline void cuda_check_error(cudaError_t err, const char *call, const char *file, int line) {
-    if (err != cudaSuccess) {
-        fprintf(stderr, "CUDA error in %s at %s:%d: %s\n",
-                call, file, line, cudaGetErrorString(err));
-        exit(EXIT_FAILURE);
-    }
-}
+// Inherit common CUDA error checking, timers, and device info from generalized common utility
+#include "cuda_common.h"
 
 // ---------------------------------------------------------------------------
 // Constants & Defaults
@@ -78,15 +68,6 @@ typedef struct {
     double totalRunTimeMs;
     int verified;
 } RunResult;
-
-// ---------------------------------------------------------------------------
-// High-Resolution Wall-Clock Timer
-// ---------------------------------------------------------------------------
-static inline double get_wall_time_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec * 1e-6;
-}
 
 // ---------------------------------------------------------------------------
 // Verification Helpers

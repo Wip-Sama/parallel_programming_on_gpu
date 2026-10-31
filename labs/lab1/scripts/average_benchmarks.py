@@ -25,12 +25,15 @@ KERNEL_MODELS = [("m", "Monolithic"), ("gs", "Grid-Stride")]
 OPERATIONS = ["vector", "matrix"]
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+LAB_DIR = os.path.dirname(SCRIPT_DIR)
+REPORT_DIR = os.path.join(LAB_DIR, "reports")
+os.makedirs(REPORT_DIR, exist_ok=True)
 
 def ensure_binary(binary_path):
     """Ensures the lab1 executable is built and up to date."""
     if not os.path.exists(binary_path) or not os.access(binary_path, os.X_OK):
         print(f"[+] Compiling '{binary_path}' via Makefile...")
-        res = subprocess.run(["make", "-C", SCRIPT_DIR, "lab1"], capture_output=True, text=True)
+        res = subprocess.run(["make", "-C", LAB_DIR, "lab1"], capture_output=True, text=True)
         if res.returncode != 0:
             print(f"[-] Build failed:\n{res.stderr}", file=sys.stderr)
             sys.exit(1)
@@ -185,9 +188,10 @@ def main():
     parser.add_argument("--mem", type=str, default="all", choices=["u", "s", "all"], help="Memory model: u, s, all (default: all)")
     parser.add_argument("--model", type=str, default="all", choices=["m", "gs", "all"], help="Kernel model: m, gs, all (default: all)")
     parser.add_argument("--device", type=int, default=0, help="CUDA device index (default: 0)")
-    parser.add_argument("--csv", type=str, default=os.path.join(SCRIPT_DIR, "benchmark_results_averaged.csv"), help="CSV output path")
-    parser.add_argument("--report", type=str, default=os.path.join(SCRIPT_DIR, "benchmark_findings.md"), help="Markdown report path")
-    parser.add_argument("--binary", type=str, default=os.path.join(SCRIPT_DIR, "lab1"), help="Path to lab1 executable")
+    parser.add_argument("--csv", type=str, default=os.path.join(REPORT_DIR, "benchmark_results_averaged.csv"), help="CSV output path")
+    parser.add_argument("--report", type=str, default=os.path.join(REPORT_DIR, "benchmark_findings.md"), help="Markdown report path")
+    parser.add_argument("--binary", type=str, default=os.path.join(LAB_DIR, "lab1"), help="Path to lab1 executable")
+    parser.add_argument("--plots", action="store_true", default=True, help="Automatically generate analytical plots (default: True)")
     args = parser.parse_args()
 
     ensure_binary(args.binary)
@@ -266,6 +270,15 @@ def main():
     print(f" Results exported to CSV:    {args.csv}")
     print(f" Report written to Markdown: {args.report}")
     print("=" * 80 + "\n")
+
+    if args.plots:
+        try:
+            sys.path.insert(0, SCRIPT_DIR)
+            import generate_plots
+            print("[+] Generating Lab 1 analytical plots...")
+            generate_plots.main()
+        except Exception as e:
+            print(f"[-] Plot generation failed: {e}", file=sys.stderr)
 
 if __name__ == "__main__":
     main()

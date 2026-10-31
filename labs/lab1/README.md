@@ -90,10 +90,15 @@ python3 average_benchmarks.py -n 5 --mem u --model gs
 - **`Total Run Time (ms)`**: Total end-to-end execution time including host verification. For Unified Memory, this captures on-demand page fault migrations across the PCIe bus when the host accesses data.
 - **`Status`**: `PASS` if verified ($C[i] = 3.0$), `FAIL` otherwise.
 
-### Generated Artifacts
+### Generated Artifacts (`reports/` folder)
 - **Console Tables:** Formatted summary tables showing means and standard deviations ($\text{mean} \pm \text{std}$).
-- **CSV Data File:** Exported to `benchmark_results_averaged.csv`.
-- **Markdown Report:** Comprehensive report and architectural analysis exported to `benchmark_findings.md`.
+- **CSV Data File:** Exported to `reports/benchmark_results_averaged.csv`.
+- **Markdown Report:** Comprehensive report and architectural analysis exported to `reports/benchmark_findings.md`.
+- **Analytical Plots:** Publication-quality PNG plots generated into `reports/`:
+  - `plot1_vector_runtime.png`: Vector addition runtime across block sizes.
+  - `plot2_matrix_runtime.png`: Matrix addition runtime across block sizes.
+  - `plot3_time_breakdown.png`: Init vs Add vs Memcpy / page migration breakdown.
+  - `plot4_unified_vs_standard.png`: Device working time vs total end-to-end runtime.
 
 ---
 
@@ -116,6 +121,12 @@ make universal
 
 # Run a quick test:
 make run
+
+# Generate analytical plots:
+make plots
+
+# Run multi-run benchmarks:
+make bench
 
 # Clean binaries:
 make clean
