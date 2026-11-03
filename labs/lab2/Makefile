@@ -90,7 +90,7 @@ verify-standard: lab2_standard
 plots:
 	python3 scripts/generate_plots.py
 
-bench: lab2
+bench: lab2 lab2_standard
 	python3 scripts/average_benchmarks.py
 
 clean:
