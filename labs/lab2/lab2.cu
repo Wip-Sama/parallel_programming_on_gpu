@@ -1,6 +1,7 @@
 /**
  * @file lab2.cu
  * @brief Massively Parallel Programming on GPUs - Lab 2: Color-to-Gray Filter
+ *        Unified Memory Implementation (cudaMallocManaged)
  * 
  * Course: Massively Parallel Programming on GPUs
  * Teacher: Donato D'Ambrosio
@@ -21,8 +22,6 @@
  * @param width       Image width in pixels
  * @param height      Image height in pixels
  * @param num_threads Number of OpenMP threads to use
- * 
- * TODO: Implement the parallel CPU color-to-gray transformation using OpenMP.
  */
 void color_to_gray_cpu(
     const unsigned char *rgb, 
@@ -35,7 +34,7 @@ void color_to_gray_cpu(
 
     #pragma omp parallel for num_threads(num_threads)
     for (int i = 0; i < size; i++) {
-        gray[i] = 0.21f * rgb[3 * i] + 0.71f * rgb[ 3 * i + 1] + 0.07f * rgb[3 * i + 2];
+        gray[i] = 0.21f * rgb[3 * i] + 0.71f * rgb[3 * i + 1] + 0.07f * rgb[3 * i + 2];
     }
 }
 
@@ -46,12 +45,10 @@ void color_to_gray_cpu(
  * @brief CUDA 2D Grid-Stride Color-to-Gray Kernel.
  * Formula: gray = 0.21 * r + 0.71 * g + 0.07 * b
  * 
- * @param rgb    Device pointer to RGB image buffer
- * @param gray   Device pointer to Grayscale output buffer
+ * @param rgb    Pointer to managed RGB image buffer
+ * @param gray   Pointer to managed Grayscale output buffer
  * @param width  Image width in pixels
  * @param height Image height in pixels
- * 
- * TODO: Implement the CUDA kernel with 2D grid-stride loops.
  */
 __global__ void color_to_gray_cuda(
     const unsigned char *rgb, 
@@ -59,7 +56,6 @@ __global__ void color_to_gray_cuda(
     int width, 
     int height
 ) {
-    
     int strideX = blockDim.x * gridDim.x;
     int strideY = blockDim.y * gridDim.y;
 
@@ -88,19 +84,17 @@ __global__ void color_to_gray_cuda(
 }
 
 // ---------------------------------------------------------------------------
-// 3. GPU Runner (Allocation, Transfers, Launch, Timing)
+// 3. GPU Runner (Unified Memory: cudaMallocManaged)
 // ---------------------------------------------------------------------------
 /**
- * @brief Executes the complete CUDA pipeline:
- * 1. Allocate device memory for RGB and Gray buffers (cudaMalloc)
- * 2. Transfer input RGB data from host to device (cudaMemcpy HtoD)
+ * @brief Executes the complete CUDA pipeline using Unified Memory:
+ * 1. Allocate managed memory for RGB and Gray buffers (cudaMallocManaged)
+ * 2. CPU populates managed RGB buffer directly (no explicit cudaMemcpy HtoD)
  * 3. Configure 2D block and grid dimensions
- * 4. Launch color_to_gray_cuda kernel
- * 5. Transfer result gray image from device to host (cudaMemcpy DtoH)
- * 6. Record exact timings for each phase with CUDA events
- * 7. Clean up device memory and CUDA events
- * 
- * TODO: Implement device allocations, transfers, timing events, and kernel launch.
+ * 4. Launch color_to_gray_cuda kernel (pages migrate on-demand via hardware page faults)
+ * 5. Synchronize device with cudaDeviceSynchronize() before host access
+ * 6. Copy output to destination buffer
+ * 7. Clean up managed memory and CUDA events
  */
 void run_gpu(
     const unsigned char *h_rgb, 
@@ -115,55 +109,53 @@ void run_gpu(
     size_t gray_bytes = static_cast<size_t>(width) * height * sizeof(unsigned char);
 
     // Set block & grid dimensions
-    // Note: CUDA blocks cannot exceed 1024 threads total (block_dim_size must be <= 32)
     timing->blockDim = dim3(block_dim_size, block_dim_size);
     timing->gridDim = dim3(
         (width  + block_dim_size - 1) / block_dim_size,
         (height + block_dim_size - 1) / block_dim_size
     );
 
-    // Set up CUDA Events for precise GPU timing
+    // Set up CUDA Events for precise kernel execution timing
     cudaEvent_t ev_start, ev_stop;
     CUDA_CHECK(cudaEventCreate(&ev_start));
     CUDA_CHECK(cudaEventCreate(&ev_stop));
 
-    // 1. Device memory allocation (timed with high-resolution wall-clock)
+    // Unified Memory allocation (cudaMallocManaged)
     double t_alloc_0 = get_wall_time_ms();
-    unsigned char *d_rgb = nullptr;
-    unsigned char *d_gray = nullptr;
-    CUDA_CHECK(cudaMalloc((void**)&d_rgb, rgb_bytes));
-    CUDA_CHECK(cudaMalloc((void**)&d_gray, gray_bytes));
-    timing->allocMs = (float)(get_wall_time_ms() - t_alloc_0);
+    unsigned char *u_rgb = nullptr;
+    unsigned char *u_gray = nullptr;
+    CUDA_CHECK(cudaMallocManaged((void**)&u_rgb, rgb_bytes));
+    CUDA_CHECK(cudaMallocManaged((void**)&u_gray, gray_bytes));
+    timing->allocMs = static_cast<float>(get_wall_time_ms() - t_alloc_0);
 
-    // 2. Host-to-Device transfer
-    CUDA_CHECK(cudaEventRecord(ev_start));
-    CUDA_CHECK(cudaMemcpy(d_rgb, h_rgb, rgb_bytes, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaEventRecord(ev_stop));
-    CUDA_CHECK(cudaEventSynchronize(ev_stop));
-    CUDA_CHECK(cudaEventElapsedTime(&timing->htodMs, ev_start, ev_stop));
+    // Populate managed RGB input buffer from host data
+    // In Unified Memory, CPU writes directly to managed memory; no explicit cudaMemcpy HtoD needed
+    memcpy(u_rgb, h_rgb, rgb_bytes);
+    timing->htodMs = 0.0f;
 
-    // 3. Kernel Execution
+    // Kernel Execution
+    // As GPU threads access u_rgb and u_gray, hardware page faults transparently migrate
+    // pages across the PCIe bus on demand
     CUDA_CHECK(cudaEventRecord(ev_start));
-    color_to_gray_cuda<<<timing->gridDim, timing->blockDim>>>(d_rgb, d_gray, width, height);
+    color_to_gray_cuda<<<timing->gridDim, timing->blockDim>>>(u_rgb, u_gray, width, height);
     CUDA_CHECK(cudaEventRecord(ev_stop));
     CUDA_CHECK(cudaEventSynchronize(ev_stop));
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaEventElapsedTime(&timing->kernelMs, ev_start, ev_stop));
 
-    // 4. Device-to-Host transfer
-    CUDA_CHECK(cudaEventRecord(ev_start));
-    CUDA_CHECK(cudaMemcpy(h_gray, d_gray, gray_bytes, cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaEventRecord(ev_stop));
-    CUDA_CHECK(cudaEventSynchronize(ev_stop));
-    CUDA_CHECK(cudaEventElapsedTime(&timing->dtohMs, ev_start, ev_stop));
+    // Device Synchronization and Host Access
+    // Explicit sync ensures GPU kernel has fully finished before CPU reads u_gray
+    CUDA_CHECK(cudaDeviceSynchronize());
+    memcpy(h_gray, u_gray, gray_bytes);
+    timing->dtohMs = 0.0f;
 
     // Compute composite timings
-    timing->computeMs = timing->htodMs + timing->kernelMs + timing->dtohMs;
+    timing->computeMs = timing->kernelMs;
     timing->totalMs   = timing->allocMs + timing->computeMs;
 
-    // Free resources and cleanup events
-    CUDA_CHECK(cudaFree(d_rgb));
-    CUDA_CHECK(cudaFree(d_gray));
+    // Free managed resources and cleanup events
+    CUDA_CHECK(cudaFree(u_rgb));
+    CUDA_CHECK(cudaFree(u_gray));
     CUDA_CHECK(cudaEventDestroy(ev_start));
     CUDA_CHECK(cudaEventDestroy(ev_stop));
 }

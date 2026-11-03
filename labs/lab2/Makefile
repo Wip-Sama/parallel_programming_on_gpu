@@ -46,14 +46,18 @@ else ifeq ($(ARCH),auto)
     endif
 endif
 
-TARGETS := lab2
+TARGETS := lab2 lab2_standard
 
-.PHONY: all clean run verify bench plots gtx980 rtx4080 universal help
+.PHONY: all clean run run-standard verify verify-standard bench plots gtx980 rtx4080 universal help
 
 all: $(TARGETS)
 
 lab2: lab2.cu common.h
-	@echo "Compiling $< -> $@ ($(GENCODE))..."
+	@echo "Compiling Unified Memory version: $< -> $@ ($(GENCODE))..."
+	$(NVCC) $(NVCC_FLAGS) $(GENCODE) $< -o $@
+
+lab2_standard: lab2_standard.cu common.h
+	@echo "Compiling Standard Memory version: $< -> $@ ($(GENCODE))..."
 	$(NVCC) $(NVCC_FLAGS) $(GENCODE) $< -o $@
 
 gtx980:
@@ -68,9 +72,18 @@ universal:
 run: lab2
 	./lab2 both 16
 
+run-standard: lab2_standard
+	./lab2_standard both 16
+
 verify: lab2
-	@echo "Running execution..."
+	@echo "Running execution (Unified Memory)..."
 	./lab2 both 16
+	@echo "Running Python bit-exact correctness verification..."
+	python3 scripts/verify_outputs.py output_cpu.png output_gpu.png
+
+verify-standard: lab2_standard
+	@echo "Running execution (Standard Memory)..."
+	./lab2_standard both 16
 	@echo "Running Python bit-exact correctness verification..."
 	python3 scripts/verify_outputs.py output_cpu.png output_gpu.png
 

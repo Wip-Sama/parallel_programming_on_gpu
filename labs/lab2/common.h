@@ -349,12 +349,21 @@ static inline void print_results(const Config &cfg, int width, int height,
         if (cfg.mode == MODE_GPU || cfg.mode == MODE_BOTH) {
             printf(" GPU Block Dim    : %d x %d\n", gpuTiming.blockDim.x, gpuTiming.blockDim.y);
             printf(" GPU Grid Dim     : %d x %d\n", gpuTiming.gridDim.x, gpuTiming.gridDim.y);
-            printf(" cudaMalloc       : %8.4f ms\n", gpuTiming.allocMs);
-            printf(" HtoD Transfer    : %8.4f ms\n", gpuTiming.htodMs);
-            printf(" Kernel Exec      : %8.4f ms\n", gpuTiming.kernelMs);
-            printf(" DtoH Transfer    : %8.4f ms\n", gpuTiming.dtohMs);
-            printf(" Compute Time     : %8.4f ms (HtoD + Kernel + DtoH)\n", gpuTiming.computeMs);
-            printf(" Total GPU Time   : %8.4f ms (Alloc + Compute)\n", gpuTiming.totalMs);
+            if (gpuTiming.htodMs == 0.0f && gpuTiming.dtohMs == 0.0f) {
+                printf(" Memory Model     : Unified Memory (cudaMallocManaged)\n");
+                printf(" cudaMallocManaged: %8.4f ms\n", gpuTiming.allocMs);
+                printf(" Kernel Exec      : %8.4f ms (Includes on-demand page faults)\n", gpuTiming.kernelMs);
+                printf(" Compute Time     : %8.4f ms\n", gpuTiming.computeMs);
+                printf(" Total GPU Time   : %8.4f ms (Alloc + Compute)\n", gpuTiming.totalMs);
+            } else {
+                printf(" Memory Model     : Standard Memory (cudaMalloc + cudaMemcpy)\n");
+                printf(" cudaMalloc       : %8.4f ms\n", gpuTiming.allocMs);
+                printf(" HtoD Transfer    : %8.4f ms\n", gpuTiming.htodMs);
+                printf(" Kernel Exec      : %8.4f ms\n", gpuTiming.kernelMs);
+                printf(" DtoH Transfer    : %8.4f ms\n", gpuTiming.dtohMs);
+                printf(" Compute Time     : %8.4f ms (HtoD + Kernel + DtoH)\n", gpuTiming.computeMs);
+                printf(" Total GPU Time   : %8.4f ms (Alloc + Compute)\n", gpuTiming.totalMs);
+            }
         }
         printf("======================================================================\n");
     }
