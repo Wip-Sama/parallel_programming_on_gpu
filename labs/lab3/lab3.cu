@@ -24,7 +24,7 @@ void cpu_init(
     #pragma omp parallel for num_threads(num_threads)
     for (int i = 0; i < K; i++) {
         for (int j = 0; j < N; j++) {
-            B[i * K + j] = 2;
+            B[i * N + j] = 2;
         }
     }
     #pragma omp parallel for num_threads(num_threads)
@@ -53,6 +53,26 @@ void matrix_multiplication_cpu(
                 sum += A[i * K + k] * B[k * N + j];
             }
             C[i * N + j] = sum;
+        }
+    }
+}
+
+void matrix_multiplication_cpu_optimized(
+    const float* A,
+    const float* B,
+    float* C,
+    int N,
+    int M,
+    int K,
+    int num_threads
+) {
+    #pragma omp parallel for num_threads(num_threads)
+    for (int i = 0; i < M; i++) {
+        for (int k = 0; k < K; k++) {
+            float a = A[i * K + k];
+            for (int j = 0; j < N; j++) {
+                C[i * N + j] += a * B[k * N + j];
+            }
         }
     }
 }
@@ -115,24 +135,29 @@ void run_gpu_global_memory(
     size_t size_B = K * N * sizeof(float);
     size_t size_C = M * N * sizeof(float);
 
-    timing->blockDim = dim3(
-        block_dim_size, 
-        block_dim_size
-    );
+    timing->blockDim = dim3(block_dim_size, block_dim_size);
     timing->gridDim = dim3(
-        (M + block_dim_size - 1) / block_dim_size, 
-        (N + block_dim_size - 1) / block_dim_size
+        (N + block_dim_size - 1) / block_dim_size, 
+        (M + block_dim_size - 1) / block_dim_size
     );
 
+    cudaEvent_t ev_start, ev_stop;
+    CUDA_CHECK(cudaEventCreate(&ev_start));
+    CUDA_CHECK(cudaEventCreate(&ev_stop));
+
+    double t_alloc_0 = get_wall_time_ms();
     unsigned char *dev_A = nullptr, *dev_B = nullptr, *dev_C = nullptr;
     CUDA_CHECK(cudaMallocManaged((void**)&dev_A, size_A));
     CUDA_CHECK(cudaMallocManaged((void**)&dev_B, size_B));
     CUDA_CHECK(cudaMallocManaged((void**)&dev_C, size_C));
-
+    timing->allocMs = static_cast<float>(get_wall_time_ms() - t_alloc_0);
+    
     memcpy(dev_A, A, size_A);
     memcpy(dev_B, B, size_B);
+    timing->htodMs = 0.0f;
 
-    global_memory_matrix_multiplication_cuda<<<timing->gridDim, timing->blockDim>>>(
+    CUDA_CHECK(cudaEventRecord(ev_start));
+    global_memory_matrix_multiplication_cuda<<<gridDim, blockDim>>>(
         (float*)dev_A, 
         (float*)dev_B, 
         (float*)dev_C, 
@@ -140,15 +165,23 @@ void run_gpu_global_memory(
         M, 
         K
     );
+    CUDA_CHECK(cudaEventRecord(ev_stop));
+    CUDA_CHECK(cudaEventSynchronize(ev_stop));
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaEventElapsedTime(&timing->kernelMs, ev_start, ev_stop));
 
     CUDA_CHECK(cudaDeviceSynchronize());
-
     memcpy(C, dev_C, size_C);
+    timing->dtohMs = 0.0f;
+
+    timing->computeMs = timing->kernelMs;
+    timing->totalMs   = timing->allocMs + timing->computeMs;
 
     CUDA_CHECK(cudaFree(dev_A));
     CUDA_CHECK(cudaFree(dev_B));
     CUDA_CHECK(cudaFree(dev_C));
-
+    CUDA_CHECK(cudaEventDestroy(ev_start));
+    CUDA_CHECK(cudaEventDestroy(ev_stop));
 }
 
 // ---------------------------------------------------------------------------
@@ -169,7 +202,8 @@ int main(int argc, char **argv) {
     C_device = (float*)malloc(M * N * sizeof(float));
     cpu_init(A, B, C_host, C_device, N, M, K, num_threads);
     matrix_multiplication_cpu(A, B, C_host, N, M, K, num_threads);
-    run_gpu_global_memory(A, B, C_device, N, M, K, block_dim_size, nullptr);
+    GpuTiming timing;
+    run_gpu_global_memory(A, B, C_device, N, M, K, block_dim_size, &timing);
     check_result(C_host, C_device, N, M, num_threads) ? printf("Results match!\n") : printf("Results do not match!\n");
     free(A);
     free(B);
