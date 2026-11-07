@@ -393,22 +393,38 @@ int main(int argc, char **argv) {
     }
 
     // 3. GPU Naive Benchmark
-    GpuTiming gpuTiming;
-    memset(&gpuTiming, 0, sizeof(gpuTiming));
-    bool verifiedGpu = true;
+    GpuTiming gpuNaiveTiming;
+    memset(&gpuNaiveTiming, 0, sizeof(gpuNaiveTiming));
+    bool verifiedNaiveGpu = true;
     if (cfg.mode == MODE_GPU || cfg.mode == MODE_ALL) {
-        run_gpu_global_memory(A, B, C_gpu, cfg.M, cfg.K, cfg.N, cfg.blockSize, &gpuTiming);
+        run_gpu_global_memory(A, B, C_gpu, cfg.M, cfg.K, cfg.N, cfg.blockSize, &gpuNaiveTiming);
 
         if (cfg.mode == MODE_ALL) {
-            verifiedGpu = check_matrix_equality(C_std, C_gpu, cfg.M, cfg.N, cfg.tolerance);
+            verifiedNaiveGpu = check_matrix_equality(C_std, C_gpu, cfg.M, cfg.N, cfg.tolerance);
         } else {
             float expectedVal = (float)cfg.K * 0x1p-10f;
-            verifiedGpu = (fabsf(C_gpu[0] - expectedVal) <= cfg.tolerance);
+            verifiedNaiveGpu = (fabsf(C_gpu[0] - expectedVal) <= cfg.tolerance);
         }
     }
 
+    // 4. GPU Tiled Benchmark
+    GpuTiming gpuTiledTiming;
+    memset(&gpuTiledTiming, 0, sizeof(gpuTiledTiming));
+    bool verifiedTiledGpu = true;
+    if (cfg.mode == MODE_GPU || cfg.mode == MODE_ALL) {
+        run_gpu_global_memory(A, B, C_gpu, cfg.M, cfg.K, cfg.N, cfg.blockSize, &gpuTiledTiming);
+
+        if (cfg.mode == MODE_ALL) {
+            verifiedTiledGpu = check_matrix_equality(C_std, C_gpu, cfg.M, cfg.N, cfg.tolerance);
+        } else {
+            float expectedVal = (float)cfg.K * 0x1p-10f;
+            verifiedTiledGpu = (fabsf(C_gpu[0] - expectedVal) <= cfg.tolerance);
+        }
+    }
+
+
     // Output results
-    print_results(cfg, cpuStdMs, cpuOptMs, gpuTiming, verifiedStd, verifiedOpt, verifiedGpu);
+    print_results(cfg, cpuStdMs, cpuOptMs, gpuNaiveTiming, verifiedStd, verifiedOpt, verifiedNaiveGpu);
 
     // Clean up
     free(A);
