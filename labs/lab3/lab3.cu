@@ -204,6 +204,114 @@ void run_gpu_global_memory(
 }
 
 // ---------------------------------------------------------------------------
+// 2. CUDA Kernel Implementation: Tiled Matrix Multiplication (Point 4.2)
+// ---------------------------------------------------------------------------
+
+__global__ void tiled_matrix_multiplication_cuda(
+    const float *A,
+    const float *B,
+    float *C,
+    int M,
+    int K,
+    int N,
+    int TILE_WIDTH
+) {
+    __shared__ float A_tile[TILE_WIDTH][TILE_WIDTH];
+    __shared__ float B_tile[TILE_WIDTH][TILE_WIDTH];
+
+    int Row = blockIdx.y*TILE_WIDTH + threadIdx.y;
+    int Col = blockIdx.x*TILE_WIDTH + threadIdx.x;
+
+    float Pvalue = 0;
+    for (int phase = 0; phase < M/TILE_WIDTH; phase++) {
+
+        A_tile[threadIdx.y][threadIdx.x] = A[Row*M + (phase*TILE_WIDTH + threadIdx.x)];
+        B_tile[threadIdx.y][threadIdx.x] = B[(phase*TILE_WIDTH + threadIdx.y)*M + Col];
+        __syncthreads();
+
+        for (int k = 0; k < TILE_WIDTH; ++k) {
+            Pvalue += A_tile[threadIdx.y][k] * B_tile[k][threadIdx.x];
+        }
+        __syncthreads();
+    }
+    C[Row*M + Col] = Pvalue;
+}
+
+void run_gpu_global_and_shared_memory(
+    const float *A,
+    const float *B,
+    float *C,
+    int M,
+    int K,
+    int N,
+    int block_dim_size,
+    int tile_width,
+    GpuTiming *timing
+) {
+    size_t size_A = (size_t)M * K * sizeof(float);
+    size_t size_B = (size_t)K * N * sizeof(float);
+    size_t size_C = (size_t)M * N * sizeof(float);
+
+    dim3 blockDim(block_dim_size, block_dim_size);
+    dim3 gridDim(
+        (N + block_dim_size - 1) / block_dim_size,
+        (M + block_dim_size - 1) / block_dim_size
+    );
+
+    if (timing != nullptr) {
+        timing->blockDim = blockDim;
+        timing->gridDim = gridDim;
+    }
+
+    cudaEvent_t ev_start, ev_stop;
+    CUDA_CHECK(cudaEventCreate(&ev_start));
+    CUDA_CHECK(cudaEventCreate(&ev_stop));
+
+    // Measure memory allocation
+    double t_alloc_start = get_wall_time_ms();
+    float *dev_A = nullptr, *dev_B = nullptr, *dev_C = nullptr;
+    CUDA_CHECK(cudaMallocManaged((void**)&dev_A, size_A));
+    CUDA_CHECK(cudaMallocManaged((void**)&dev_B, size_B));
+    CUDA_CHECK(cudaMallocManaged((void**)&dev_C, size_C));
+    float allocMs = static_cast<float>(get_wall_time_ms() - t_alloc_start);
+
+    // Copy input matrices
+    memcpy(dev_A, A, size_A);
+    memcpy(dev_B, B, size_B);
+    memset(dev_C, 0, size_C);
+
+    // Warm-up cache / page tables if necessary, then time pure kernel execution
+    CUDA_CHECK(cudaEventRecord(ev_start));
+    tiled_matrix_multiplication_cuda<<<gridDim, blockDim>>>(
+        dev_A, dev_B, dev_C, M, K, N, tile_width
+    );
+    CUDA_CHECK(cudaEventRecord(ev_stop));
+    CUDA_CHECK(cudaEventSynchronize(ev_stop));
+    CUDA_CHECK(cudaGetLastError());
+
+    float kernelMs = 0.0f;
+    CUDA_CHECK(cudaEventElapsedTime(&kernelMs, ev_start, ev_stop));
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+    memcpy(C, dev_C, size_C);
+
+    if (timing != nullptr) {
+        timing->allocMs   = allocMs;
+        timing->htodMs    = 0.0f;
+        timing->kernelMs  = kernelMs;
+        timing->dtohMs    = 0.0f;
+        timing->computeMs = kernelMs;
+        timing->totalMs   = allocMs + kernelMs;
+    }
+
+    CUDA_CHECK(cudaFree(dev_A));
+    CUDA_CHECK(cudaFree(dev_B));
+    CUDA_CHECK(cudaFree(dev_C));
+    CUDA_CHECK(cudaEventDestroy(ev_start));
+    CUDA_CHECK(cudaEventDestroy(ev_stop));
+}
+
+// ---------------------------------------------------------------------------
 // 3. Main Entry Point
 // ---------------------------------------------------------------------------
 int main(int argc, char **argv) {
