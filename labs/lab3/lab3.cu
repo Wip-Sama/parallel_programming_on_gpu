@@ -344,6 +344,174 @@ void run_gpu_global_and_shared_memory(
 }
 
 // ---------------------------------------------------------------------------
+// 4. CUDA Kernel Implementation: Coarse-Grained Tiled Matrix Multiplication (Point 4.3)
+// ---------------------------------------------------------------------------
+
+
+template<int TILE_WIDTH, int TILE_NUMBER>
+__global__ void coarse_grained_tiled_matrix_multiplication_cuda(
+    const float *A,
+    const float *B,
+    float *C,
+    int M,
+    int K,
+    int N
+) {
+    __shared__ float A_tile[TILE_WIDTH][TILE_WIDTH];
+    __shared__ float B_tiles[TILE_NUMBER][TILE_WIDTH][TILE_WIDTH];
+
+    int Row = blockIdx.y*TILE_WIDTH + threadIdx.y;
+    int Col = blockIdx.x*TILE_WIDTH + threadIdx.x;
+
+    int numPhases = (K + TILE_WIDTH - 1) / TILE_WIDTH;
+
+    float sum[TILE_NUMBER] = {0};
+
+    for (int phase = 0; phase < numPhases; phase++) {
+        // Load stuff into shared memory
+        int colA = phase * TILE_WIDTH + threadIdx.x;
+        if (Row < M && colA < K) {
+            A_tile[threadIdx.y][threadIdx.x] = A[Row * K + colA];
+        } else {
+            A_tile[threadIdx.y][threadIdx.x] = 0.0f;
+        }
+        
+        for (int tile = 0; tile < TILE_NUMBER; ++tile) {
+            int rowB = phase * TILE_WIDTH + threadIdx.y;
+            if (rowB < K && Col < N) {
+                B_tiles[tile][threadIdx.y][threadIdx.x] = B[rowB * N + Col];
+            } else {
+                B_tiles[tile][threadIdx.y][threadIdx.x] = 0.0f;
+            }
+        }
+
+        __syncthreads();
+
+        for (int k = 0; k < TILE_WIDTH; ++k) {
+            for (int tile = 0; tile < TILE_NUMBER; ++tile) {
+                sum[tile] += A_tile[threadIdx.y][k] * B_tiles[tile][k][threadIdx.x];
+            }
+        }
+        __syncthreads();
+    }
+    if (Row < M && Col < N) {
+        for (int tile = 0; tile < TILE_NUMBER; ++tile) {
+            C[Row * N + Col] = sum[tile];
+        }
+    }
+}
+
+
+/**
+ * @brief Driver function to run the Coarse-Grained Tiled CUDA kernel with shared memory and record timings.
+ */
+void run_gpu_coarse_grained_tiled(
+    const float *A,
+    const float *B,
+    float *C,
+    int M,
+    int K,
+    int N,
+    int block_dim_size,
+    int tile_width,
+    int tile_number,
+    GpuTiming *timing
+) {
+    if (tile_width <= 0) tile_width = block_dim_size;
+
+    size_t size_A = (size_t)M * K * sizeof(float);
+    size_t size_B = (size_t)K * N * sizeof(float);
+    size_t size_C = (size_t)M * N * sizeof(float);
+
+    dim3 blockDim(block_dim_size, block_dim_size);
+    dim3 gridDim(
+        (N + block_dim_size - 1) / block_dim_size,
+        (M + block_dim_size - 1) / block_dim_size
+    );
+
+    if (timing != nullptr) {
+        timing->blockDim = blockDim;
+        timing->gridDim = gridDim;
+    }
+
+    cudaEvent_t ev_start, ev_stop;
+    CUDA_CHECK(cudaEventCreate(&ev_start));
+    CUDA_CHECK(cudaEventCreate(&ev_stop));
+
+    // Measure memory allocation
+    double t_alloc_start = get_wall_time_ms();
+    float *dev_A = nullptr, *dev_B = nullptr, *dev_C = nullptr;
+    CUDA_CHECK(cudaMallocManaged((void**)&dev_A, size_A));
+    CUDA_CHECK(cudaMallocManaged((void**)&dev_B, size_B));
+    CUDA_CHECK(cudaMallocManaged((void**)&dev_C, size_C));
+    float allocMs = static_cast<float>(get_wall_time_ms() - t_alloc_start);
+
+    // Copy input matrices
+    memcpy(dev_A, A, size_A);
+    memcpy(dev_B, B, size_B);
+    memset(dev_C, 0, size_C);
+
+    CUDA_CHECK(cudaEventRecord(ev_start));
+    switch (tile_width, tile_number)
+    {
+    case (8, 1):
+        coarse_grained_tiled_matrix_multiplication_cuda<8, 1><<<gridDim, blockDim>>>(dev_A, dev_B, dev_C, M, K, N);
+        break;
+    case (8, 2):
+        coarse_grained_tiled_matrix_multiplication_cuda<8, 2><<<gridDim, blockDim>>>(dev_A, dev_B, dev_C, M, K, N);
+        break;
+    case (8, 4):
+        coarse_grained_tiled_matrix_multiplication_cuda<8, 4><<<gridDim, blockDim>>>(dev_A, dev_B, dev_C, M, K, N);
+        break;
+    case (16, 1):
+        coarse_grained_tiled_matrix_multiplication_cuda<16, 1><<<gridDim, blockDim>>>(dev_A, dev_B, dev_C, M, K, N);
+        break;
+    case (16, 2):
+        coarse_grained_tiled_matrix_multiplication_cuda<16, 2><<<gridDim, blockDim>>>(dev_A, dev_B, dev_C, M, K, N);
+        break;
+    case (16, 4):
+        coarse_grained_tiled_matrix_multiplication_cuda<16, 4><<<gridDim, blockDim>>>(dev_A, dev_B, dev_C, M, K, N);
+        break;
+    case (32, 1):
+        coarse_grained_tiled_matrix_multiplication_cuda<32, 1><<<gridDim, blockDim>>>(dev_A, dev_B, dev_C, M, K, N);
+        break;
+    case (32, 2):
+        coarse_grained_tiled_matrix_multiplication_cuda<32, 2><<<gridDim, blockDim>>>(dev_A, dev_B, dev_C, M, K, N);
+        break;
+    case (32, 4):
+        coarse_grained_tiled_matrix_multiplication_cuda<32, 4><<<gridDim, blockDim>>>(dev_A, dev_B, dev_C, M, K, N);
+        break;
+    default:
+        fprintf(stderr, "Error: Unsupported tile_width (%d) and tile_number (%d) combination.\n", tile_width, tile_number);
+        exit(EXIT_FAILURE);
+    }
+    CUDA_CHECK(cudaEventRecord(ev_stop));
+    CUDA_CHECK(cudaEventSynchronize(ev_stop));
+    CUDA_CHECK(cudaGetLastError());
+
+    float kernelMs = 0.0f;
+    CUDA_CHECK(cudaEventElapsedTime(&kernelMs, ev_start, ev_stop));
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+    memcpy(C, dev_C, size_C);
+
+    if (timing != nullptr) {
+        timing->allocMs   = allocMs;
+        timing->htodMs    = 0.0f;
+        timing->kernelMs  = kernelMs;
+        timing->dtohMs    = 0.0f;
+        timing->computeMs = kernelMs;
+        timing->totalMs   = allocMs + kernelMs;
+    }
+
+    CUDA_CHECK(cudaFree(dev_A));
+    CUDA_CHECK(cudaFree(dev_B));
+    CUDA_CHECK(cudaFree(dev_C));
+    CUDA_CHECK(cudaEventDestroy(ev_start));
+    CUDA_CHECK(cudaEventDestroy(ev_stop));
+}
+
+// ---------------------------------------------------------------------------
 // 4. Main Entry Point
 // ---------------------------------------------------------------------------
 int main(int argc, char **argv) {
