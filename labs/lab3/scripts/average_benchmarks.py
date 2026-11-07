@@ -4,12 +4,13 @@ average_benchmarks.py - Automated Multi-Run Benchmark Harness & Statistical Anal
 Course: Massively Parallel Programming on GPUs - Lab 3: Naive & Tiled Matrix Multiplication
 Teacher: Donato D'Ambrosio
 
-Evaluation Scope (Point 4.1):
+Evaluation Scope (Points 4.1 & 4.2):
 1. CPU OpenMP Baseline Standard (i-j-k loop, 8 threads)
 2. CPU OpenMP Baseline Optimized (i-k-j loop, 8 threads)
-3. CUDA Naive (Global memory only) across block sizes {8x8, 16x16, 32x32}
-4. Statistical aggregation across 1 warm-up + 4 repetitions (Section 5.4)
-5. Exports consolidated CSV, comparative Markdown report, and triggers Cairo plot generation
+3. Point 4.1: CUDA Naive (Global Memory only) across block sizes {8x8, 16x16, 32x32}
+4. Point 4.2: CUDA Tiled (Global & Shared Memory) across block/tile sizes {8x8, 16x16, 32x32}
+5. Statistical aggregation across 1 warm-up + 4 repetitions (Section 5.4)
+6. Exports consolidated CSV, comparative Markdown report, and triggers Cairo plot generation
 """
 
 import os
@@ -94,10 +95,10 @@ def run_single(mode, block_size=16, threads=8, M=DEFAULT_M, K=DEFAULT_K, N=DEFAU
                         "gflops": float(parts[7]),
                         "status": parts[8]
                     }
-                elif tag == "gpu":
-                    # CSV,gpu,blockSize,gridX,gridY,threads,M,K,N,allocMs,htodMs,kernelMs,dtohMs,computeMs,totalMs,gflops,status
+                elif tag in ("gpu", "gpu_naive", "gpu_tiled"):
+                    # CSV,gpu_tag,blockSize,gridX,gridY,threads,M,K,N,allocMs,htodMs,kernelMs,dtohMs,computeMs,totalMs,gflops,status
                     return {
-                        "mode": "gpu",
+                        "mode": tag,
                         "blockSize": int(parts[2]),
                         "gridX": int(parts[3]),
                         "gridY": int(parts[4]),
@@ -114,26 +115,6 @@ def run_single(mode, block_size=16, threads=8, M=DEFAULT_M, K=DEFAULT_K, N=DEFAU
                         "gflops": float(parts[15]),
                         "status": parts[16]
                     }
-                elif tag == "all":
-                    # CSV,all,block,threads,M,K,N,cpuStdMs,cpuOptMs,gpuKernelMs,gpuTotalMs,gflopsStd,gflopsOpt,gflopsGpu,speedupStd,speedupOpt,status
-                    return {
-                        "mode": "all",
-                        "blockSize": int(parts[2]),
-                        "threads": int(parts[3]),
-                        "M": int(parts[4]),
-                        "K": int(parts[5]),
-                        "N": int(parts[6]),
-                        "cpuStdMs": float(parts[7]),
-                        "cpuOptMs": float(parts[8]),
-                        "gpuKernelMs": float(parts[9]),
-                        "gpuTotalMs": float(parts[10]),
-                        "gflopsStd": float(parts[11]),
-                        "gflopsOpt": float(parts[12]),
-                        "gflopsGpu": float(parts[13]),
-                        "speedupStd": float(parts[14]),
-                        "speedupOpt": float(parts[15]),
-                        "status": parts[16]
-                    }
     except subprocess.CalledProcessError as e:
         print(f"[-] Execution error for {' '.join(cmd)}:\n{e.stderr}", file=sys.stderr)
         return None
@@ -142,72 +123,20 @@ def run_single(mode, block_size=16, threads=8, M=DEFAULT_M, K=DEFAULT_K, N=DEFAU
         return None
     return None
 
-def run_benchmarks(repetitions=REPETITIONS, threads=8, M=DEFAULT_M, K=DEFAULT_K, N=DEFAULT_N):
-    ensure_binary()
-
-    total_ops = 2.0 * M * N * K
-    print("=" * 90)
-    print(" Lab 3: Automated Multi-Run Benchmark Suite (Naive Matrix Multiplication)")
-    print(f" Matrix Dimensions             : M={M}, K={K}, N={N} ({total_ops * 1e-9:.3f} GFLOP)")
-    print(f" Repetitions per Configuration : {repetitions} (after 1 warm-up run)")
-    print(f" CPU Baseline Threads          : {threads} (OpenMP)")
-    print(f" Tested CUDA Block Sizes       : 8x8, 16x16, 32x32")
-    print("=" * 90)
-
-    # -------------------------------------------------------------------------
-    # 1. CPU Standard Baseline (i-j-k loop)
-    # -------------------------------------------------------------------------
-    print(f"\n[*] Evaluating CPU OpenMP Standard Baseline ({threads} threads)...")
-    # Warm-up run
-    run_single("cpu", threads=threads, M=M, K=K, N=N)
-    
-    cpu_std_times = []
-    for i in range(repetitions):
-        r = run_single("cpu", threads=threads, M=M, K=K, N=N)
-        if r:
-            cpu_std_times.append(r["computeMs"])
-            print(f"    Run {i+1}: {r['computeMs']:.4f} ms ({r['gflops']:.2f} GFLOP/s) [{r['status']}]")
-
-    std_metrics = aggregate_metrics(cpu_std_times)
-    std_mean = std_metrics["mean"]
-    std_gflops = (total_ops * 1e-6) / std_mean if std_mean > 0 else 0.0
-    print(f"  --> CPU Standard Mean: {std_mean:.4f} ± {std_metrics['std']:.4f} ms | {std_gflops:.2f} GFLOP/s")
-
-    # -------------------------------------------------------------------------
-    # 2. CPU Optimized Baseline (i-k-j loop interchange)
-    # -------------------------------------------------------------------------
-    print(f"\n[*] Evaluating CPU OpenMP Optimized Baseline (i-k-j loop, {threads} threads)...")
-    # Warm-up run
-    run_single("cpu_opt", threads=threads, M=M, K=K, N=N)
-
-    cpu_opt_times = []
-    for i in range(repetitions):
-        r = run_single("cpu_opt", threads=threads, M=M, K=K, N=N)
-        if r:
-            cpu_opt_times.append(r["computeMs"])
-            print(f"    Run {i+1}: {r['computeMs']:.4f} ms ({r['gflops']:.2f} GFLOP/s) [{r['status']}]")
-
-    opt_metrics = aggregate_metrics(cpu_opt_times)
-    opt_mean = opt_metrics["mean"]
-    opt_gflops = (total_ops * 1e-6) / opt_mean if opt_mean > 0 else 0.0
-    speedup_opt_vs_std = (std_mean / opt_mean) if opt_mean > 0 else 0.0
-    print(f"  --> CPU Optimized Mean: {opt_mean:.4f} ± {opt_metrics['std']:.4f} ms | {opt_gflops:.2f} GFLOP/s (Speedup: {speedup_opt_vs_std:.2f}x)")
-
-    # -------------------------------------------------------------------------
-    # 3. CUDA Naive Kernel across Block Sizes
-    # -------------------------------------------------------------------------
-    gpu_results = {}
+def benchmark_cuda_kernel(kernel_mode, kernel_name, repetitions, threads, M, K, N, total_ops, std_mean, opt_mean):
+    """Benchmarks a specific CUDA kernel (naive or tiled) across all block sizes."""
+    results = {}
     for b in BLOCK_CONFIGS:
-        print(f"\n[*] Evaluating CUDA Naive (Global Mem) with Block Size {b}x{b} ({b*b} threads/block)...")
-        # Warm-up run
-        run_single("gpu", block_size=b, threads=threads, M=M, K=K, N=N)
+        print(f"\n[*] Evaluating {kernel_name} with Block Size {b}x{b} ({b*b} threads/block)...")
+        # 1 Warm-up run
+        run_single(kernel_mode, block_size=b, threads=threads, M=M, K=K, N=N)
 
         k_times, tot_times, alloc_times = [], [], []
         last_status = "PASS"
         grid_dim_str = ""
 
         for i in range(repetitions):
-            r = run_single("gpu", block_size=b, threads=threads, M=M, K=K, N=N)
+            r = run_single(kernel_mode, block_size=b, threads=threads, M=M, K=K, N=N)
             if r:
                 k_times.append(r["kernelMs"])
                 tot_times.append(r["totalMs"])
@@ -227,7 +156,9 @@ def run_benchmarks(repetitions=REPETITIONS, threads=8, M=DEFAULT_M, K=DEFAULT_K,
         speedup_std = (std_mean / k_mean) if k_mean > 0 else 0.0
         speedup_opt = (opt_mean / k_mean) if k_mean > 0 else 0.0
 
-        gpu_results[b] = {
+        results[b] = {
+            "kernelType": kernel_name,
+            "mode": kernel_mode,
             "blockSize": b,
             "blockDim": f"{b}x{b}",
             "gridDim": grid_dim_str,
@@ -244,14 +175,86 @@ def run_benchmarks(repetitions=REPETITIONS, threads=8, M=DEFAULT_M, K=DEFAULT_K,
         }
         print(f"  --> Average {b}x{b}: Kernel = {k_mean:.4f} ± {k_metrics['std']:.4f} ms | {k_gflops:.2f} GFLOP/s (Speedup vs Std: {speedup_std:.2f}x, vs Opt: {speedup_opt:.2f}x)")
 
+    return results
+
+def run_benchmarks(repetitions=REPETITIONS, threads=8, M=DEFAULT_M, K=DEFAULT_K, N=DEFAULT_N):
+    ensure_binary()
+
+    total_ops = 2.0 * M * N * K
+    print("=" * 95)
+    print(" Lab 3: Automated Multi-Run Benchmark Suite (Naive & Tiled Matrix Multiplication)")
+    print(f" Matrix Dimensions             : M={M}, K={K}, N={N} ({total_ops * 1e-9:.3f} GFLOP)")
+    print(f" Repetitions per Configuration : {repetitions} (after 1 warm-up run)")
+    print(f" CPU Baseline Threads          : {threads} (OpenMP)")
+    print(f" Tested CUDA Block Sizes       : 8x8, 16x16, 32x32")
+    print("=" * 95)
+
     # -------------------------------------------------------------------------
-    # 4. Save Consolidated CSV
+    # 1. CPU Standard Baseline (i-j-k loop)
+    # -------------------------------------------------------------------------
+    print(f"\n[*] Evaluating CPU OpenMP Standard Baseline ({threads} threads)...")
+    run_single("cpu", threads=threads, M=M, K=K, N=N)
+    
+    cpu_std_times = []
+    for i in range(repetitions):
+        r = run_single("cpu", threads=threads, M=M, K=K, N=N)
+        if r:
+            cpu_std_times.append(r["computeMs"])
+            print(f"    Run {i+1}: {r['computeMs']:.4f} ms ({r['gflops']:.2f} GFLOP/s) [{r['status']}]")
+
+    std_metrics = aggregate_metrics(cpu_std_times)
+    std_mean = std_metrics["mean"]
+    std_gflops = (total_ops * 1e-6) / std_mean if std_mean > 0 else 0.0
+    print(f"  --> CPU Standard Mean: {std_mean:.4f} ± {std_metrics['std']:.4f} ms | {std_gflops:.2f} GFLOP/s")
+
+    # -------------------------------------------------------------------------
+    # 2. CPU Optimized Baseline (i-k-j loop interchange)
+    # -------------------------------------------------------------------------
+    print(f"\n[*] Evaluating CPU OpenMP Optimized Baseline (i-k-j loop, {threads} threads)...")
+    run_single("cpu_opt", threads=threads, M=M, K=K, N=N)
+
+    cpu_opt_times = []
+    for i in range(repetitions):
+        r = run_single("cpu_opt", threads=threads, M=M, K=K, N=N)
+        if r:
+            cpu_opt_times.append(r["computeMs"])
+            print(f"    Run {i+1}: {r['computeMs']:.4f} ms ({r['gflops']:.2f} GFLOP/s) [{r['status']}]")
+
+    opt_metrics = aggregate_metrics(cpu_opt_times)
+    opt_mean = opt_metrics["mean"]
+    opt_gflops = (total_ops * 1e-6) / opt_mean if opt_mean > 0 else 0.0
+    speedup_opt_vs_std = (std_mean / opt_mean) if opt_mean > 0 else 0.0
+    print(f"  --> CPU Optimized Mean: {opt_mean:.4f} ± {opt_metrics['std']:.4f} ms | {opt_gflops:.2f} GFLOP/s (Speedup: {speedup_opt_vs_std:.2f}x)")
+
+    # -------------------------------------------------------------------------
+    # 3. Point 4.1: CUDA Naive Kernel (Global Memory Only)
+    # -------------------------------------------------------------------------
+    print(f"\n" + "=" * 95)
+    print(" POINT 4.1: CUDA NAIVE MATRIX MULTIPLICATION (GLOBAL MEMORY ONLY)")
+    print("=" * 95)
+    naive_results = benchmark_cuda_kernel(
+        "gpu_naive", "CUDA Naive", repetitions, threads, M, K, N, total_ops, std_mean, opt_mean
+    )
+
+    # -------------------------------------------------------------------------
+    # 4. Point 4.2: CUDA Tiled Kernel (Global & Shared Memory)
+    # -------------------------------------------------------------------------
+    print(f"\n" + "=" * 95)
+    print(" POINT 4.2: CUDA TILED MATRIX MULTIPLICATION (GLOBAL & SHARED MEMORY)")
+    print("=" * 95)
+    tiled_results = benchmark_cuda_kernel(
+        "gpu_tiled", "CUDA Tiled", repetitions, threads, M, K, N, total_ops, std_mean, opt_mean
+    )
+
+    # -------------------------------------------------------------------------
+    # 5. Save Consolidated CSV
     # -------------------------------------------------------------------------
     csv_rows = []
     # CPU Standard
     csv_rows.append({
         "Configuration": "CPU OpenMP (Standard)",
         "Type": "CPU",
+        "KernelType": "CPU Standard",
         "BlockSize": "-",
         "Threads": threads,
         "M": M, "K": K, "N": N,
@@ -263,12 +266,14 @@ def run_benchmarks(repetitions=REPETITIONS, threads=8, M=DEFAULT_M, K=DEFAULT_K,
         "GFlops": round(std_gflops, 2),
         "SpeedupVsStd": 1.0,
         "SpeedupVsOpt": round(std_mean / opt_mean, 2) if opt_mean > 0 else 0.0,
+        "SpeedupVsNaive": 0.0,
         "Status": "PASS"
     })
     # CPU Optimized
     csv_rows.append({
         "Configuration": "CPU OpenMP (Optimized I-K-J)",
         "Type": "CPU",
+        "KernelType": "CPU Optimized",
         "BlockSize": "-",
         "Threads": threads,
         "M": M, "K": K, "N": N,
@@ -280,13 +285,15 @@ def run_benchmarks(repetitions=REPETITIONS, threads=8, M=DEFAULT_M, K=DEFAULT_K,
         "GFlops": round(opt_gflops, 2),
         "SpeedupVsStd": round(speedup_opt_vs_std, 2),
         "SpeedupVsOpt": 1.0,
+        "SpeedupVsNaive": 0.0,
         "Status": "PASS"
     })
-    # GPU configurations
-    for b, res in gpu_results.items():
+    # CUDA Naive Configurations
+    for b, res in naive_results.items():
         csv_rows.append({
             "Configuration": f"CUDA Naive {b}x{b}",
             "Type": "GPU",
+            "KernelType": "CUDA Naive (Global)",
             "BlockSize": f"{b}x{b}",
             "Threads": res["threadsPerBlock"],
             "M": M, "K": K, "N": N,
@@ -298,6 +305,29 @@ def run_benchmarks(repetitions=REPETITIONS, threads=8, M=DEFAULT_M, K=DEFAULT_K,
             "GFlops": round(res["gflops"], 2),
             "SpeedupVsStd": round(res["speedupVsStd"], 2),
             "SpeedupVsOpt": round(res["speedupVsOpt"], 2),
+            "SpeedupVsNaive": 1.0,
+            "Status": res["status"]
+        })
+    # CUDA Tiled Configurations
+    for b, res in tiled_results.items():
+        naive_k_mean = naive_results[b]["kernelMeanMs"] if b in naive_results else res["kernelMeanMs"]
+        speedup_vs_naive = (naive_k_mean / res["kernelMeanMs"]) if res["kernelMeanMs"] > 0 else 0.0
+        csv_rows.append({
+            "Configuration": f"CUDA Tiled {b}x{b}",
+            "Type": "GPU",
+            "KernelType": "CUDA Tiled (Shared)",
+            "BlockSize": f"{b}x{b}",
+            "Threads": res["threadsPerBlock"],
+            "M": M, "K": K, "N": N,
+            "KernelMeanMs": round(res["kernelMeanMs"], 4),
+            "KernelStdMs": round(res["kernelStdMs"], 4),
+            "AllocMeanMs": round(res["allocMeanMs"], 4),
+            "TotalMeanMs": round(res["totalMeanMs"], 4),
+            "TotalStdMs": round(res["totalStdMs"], 4),
+            "GFlops": round(res["gflops"], 2),
+            "SpeedupVsStd": round(res["speedupVsStd"], 2),
+            "SpeedupVsOpt": round(res["speedupVsOpt"], 2),
+            "SpeedupVsNaive": round(speedup_vs_naive, 2),
             "Status": res["status"]
         })
 
@@ -306,47 +336,53 @@ def run_benchmarks(repetitions=REPETITIONS, threads=8, M=DEFAULT_M, K=DEFAULT_K,
     print(f"\n[+] Saved consolidated benchmark data to '{csv_path}'")
 
     # -------------------------------------------------------------------------
-    # 5. Generate Markdown Summary Report
+    # 6. Generate Markdown Summary Report
     # -------------------------------------------------------------------------
     md_path = os.path.join(REPORT_DIR, "benchmark_summary.md")
     with open(md_path, "w", encoding="utf-8") as f:
-        f.write("# Lab 3: Naive Matrix Multiplication Performance Benchmark Report\n\n")
+        f.write("# Lab 3: Matrix Multiplication Performance Benchmark Report\n\n")
         f.write(f"- **Course**: Massively Parallel Programming on GPUs\n")
         f.write(f"- **Teacher**: Donato D'Ambrosio\n")
         f.write(f"- **Dimensions**: $M={M}, K={K}, N={N}$ ($2.147\\text{{ GFLOP}}$)\n")
         f.write(f"- **Repetitions**: {repetitions} runs (following 1 warm-up run)\n")
         f.write(f"- **CPU Threads**: {threads} OpenMP threads\n\n")
         f.write("## Consolidated Benchmark Results\n\n")
-        f.write("| Implementation | Block / Threads | Kernel Time (ms) | Total Time (ms) | Throughput (GFLOP/s) | Speedup vs CPU Std | Speedup vs CPU Opt | Status |\n")
-        f.write("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
+        f.write("| Implementation | Kernel Type | Block / Threads | Kernel Time (ms) | Total Time (ms) | Throughput (GFLOP/s) | Speedup vs CPU Std | Speedup vs CPU Opt | Speedup vs Naive | Status |\n")
+        f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
         for row in csv_rows:
-            f.write(f"| {row['Configuration']} | {row['BlockSize']} ({row['Threads']}) | "
+            f.write(f"| {row['Configuration']} | {row['KernelType']} | {row['BlockSize']} ({row['Threads']}) | "
                     f"{row['KernelMeanMs']:.4f} ± {row['KernelStdMs']:.4f} | "
                     f"{row['TotalMeanMs']:.4f} ± {row['TotalStdMs']:.4f} | "
                     f"{row['GFlops']:.2f} | "
                     f"{row['SpeedupVsStd']:.2f}x | "
                     f"{row['SpeedupVsOpt']:.2f}x | "
+                    f"{row['SpeedupVsNaive']:.2f}x | "
                     f"{row['Status']} |\n")
-        f.write("\n\n## Key Observations\n\n")
+        f.write("\n\n## Key Observations & Analysis\n\n")
         f.write(f"1. **CPU Memory Optimization**: Loop interchange (i-k-j) improves CPU performance by **{speedup_opt_vs_std:.2f}x** over the standard i-j-k baseline due to stride-1 continuous cache-line streaming across matrix $B$.\n")
-        best_b = min(gpu_results.keys(), key=lambda b: gpu_results[b]["kernelMeanMs"])
-        best_res = gpu_results[best_b]
-        f.write(f"2. **CUDA Block Dimension Impact**: Block size **{best_b}x{best_b}** ({best_b*best_b} threads/block) achieved the fastest GPU execution time of **{best_res['kernelMeanMs']:.4f} ms** ({best_res['gflops']:.2f} GFLOP/s), providing a **{best_res['speedupVsStd']:.2f}x** speedup over the standard CPU baseline.\n")
-        f.write(f"3. **Memory Coalescing in Naive Kernel**: In the global memory naive implementation, column threads access consecutive elements of $B$, but each thread redundantly loads $A$ from global memory across the $K$ iterations. Tiled matrix multiplication with shared memory (Lab 3 Point 4.2) will address this reuse pattern.\n")
+        best_naive_b = min(naive_results.keys(), key=lambda b: naive_results[b]["kernelMeanMs"])
+        best_naive = naive_results[best_naive_b]
+        best_tiled_b = min(tiled_results.keys(), key=lambda b: tiled_results[b]["kernelMeanMs"])
+        best_tiled = tiled_results[best_tiled_b]
+        tiled_speedup = (best_naive["kernelMeanMs"] / best_tiled["kernelMeanMs"]) if best_tiled["kernelMeanMs"] > 0 else 0.0
+
+        f.write(f"2. **Point 4.1 (CUDA Naive)**: Block size **{best_naive_b}x{best_naive_b}** ({best_naive_b*best_naive_b} threads/block) achieved the fastest Naive GPU execution time of **{best_naive['kernelMeanMs']:.4f} ms** ({best_naive['gflops']:.2f} GFLOP/s).\n")
+        f.write(f"3. **Point 4.2 (CUDA Tiled with Shared Memory)**: Block size **{best_tiled_b}x{best_tiled_b}** achieved the fastest Tiled GPU execution time of **{best_tiled['kernelMeanMs']:.4f} ms** ({best_tiled['gflops']:.2f} GFLOP/s), providing a **{tiled_speedup:.2f}x** speedup over the Naive GPU kernel and **{best_tiled['speedupVsStd']:.2f}x** over the standard CPU baseline.\n")
+        f.write(f"4. **Shared Memory Benefit**: By cooperatively loading $T \\times T$ tiles into shared memory, global memory transactions are reduced by a factor of $T$. Each loaded element of $A$ and $B$ is reused $T$ times within the thread block before fetching subsequent tiles.\n")
 
     print(f"[+] Saved Markdown summary report to '{md_path}'")
 
     # -------------------------------------------------------------------------
-    # 6. Trigger Analytical Plot Generation
+    # 7. Trigger Analytical Plot Generation
     # -------------------------------------------------------------------------
     plot_script = os.path.join(SCRIPT_DIR, "generate_plots.py")
     if os.path.exists(plot_script):
         print("\n[*] Triggering automated chart generation via generate_plots.py...")
         subprocess.run([sys.executable, plot_script], check=False)
 
-    print("\n" + "=" * 90)
+    print("\n" + "=" * 95)
     print(" Benchmark Suite Completed Successfully!")
-    print("=" * 90)
+    print("=" * 95)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Lab 3 Multi-Run Matrix Multiplication Benchmark Harness")

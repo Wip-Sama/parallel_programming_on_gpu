@@ -17,7 +17,8 @@ void cpu_init(
     float *B,
     float *C_std,
     float *C_opt,
-    float *C_gpu,
+    float *C_naive,
+    float *C_tiled,
     int M,
     int K,
     int N,
@@ -40,9 +41,10 @@ void cpu_init(
     #pragma omp parallel for num_threads(num_threads)
     for (int i = 0; i < M; i++) {
         for (int j = 0; j < N; j++) {
-            if (C_std) C_std[i * N + j] = 0.0f;
-            if (C_opt) C_opt[i * N + j] = 0.0f;
-            if (C_gpu) C_gpu[i * N + j] = 0.0f;
+            if (C_std)   C_std[i * N + j]   = 0.0f;
+            if (C_opt)   C_opt[i * N + j]   = 0.0f;
+            if (C_naive) C_naive[i * N + j] = 0.0f;
+            if (C_tiled) C_tiled[i * N + j] = 0.0f;
         }
     }
 }
@@ -172,7 +174,6 @@ void run_gpu_global_memory(
     memcpy(dev_B, B, size_B);
     memset(dev_C, 0, size_C);
 
-    // Warm-up cache / page tables if necessary, then time pure kernel execution
     CUDA_CHECK(cudaEventRecord(ev_start));
     naive_matrix_multiplication_cuda<<<gridDim, blockDim>>>(
         dev_A, dev_B, dev_C, M, K, N
@@ -204,39 +205,74 @@ void run_gpu_global_memory(
 }
 
 // ---------------------------------------------------------------------------
-// 2. CUDA Kernel Implementation: Tiled Matrix Multiplication (Point 4.2)
+// 3. CUDA Kernel Implementation: Tiled Matrix Multiplication (Point 4.2)
 // ---------------------------------------------------------------------------
 
+/**
+ * @brief Point 4.2: Tiled Matrix Multiplication (Global and Shared Memory).
+ * Divides matrix C into square tiles of dimension TILE_WIDTH x TILE_WIDTH.
+ * Each block computes one tile of C, cooperatively loading square tiles of A and B
+ * into shared memory across phases along reduction dimension K.
+ * Handles boundary conditions where M, N, or K is not a multiple of TILE_WIDTH.
+ */
+template<int TILE_WIDTH>
 __global__ void tiled_matrix_multiplication_cuda(
     const float *A,
     const float *B,
     float *C,
     int M,
     int K,
-    int N,
-    int TILE_WIDTH
+    int N
 ) {
     __shared__ float A_tile[TILE_WIDTH][TILE_WIDTH];
     __shared__ float B_tile[TILE_WIDTH][TILE_WIDTH];
 
-    int Row = blockIdx.y*TILE_WIDTH + threadIdx.y;
-    int Col = blockIdx.x*TILE_WIDTH + threadIdx.x;
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
 
-    float Pvalue = 0;
-    for (int phase = 0; phase < M/TILE_WIDTH; phase++) {
+    int Row = blockIdx.y * TILE_WIDTH + ty;
+    int Col = blockIdx.x * TILE_WIDTH + tx;
 
-        A_tile[threadIdx.y][threadIdx.x] = A[Row*M + (phase*TILE_WIDTH + threadIdx.x)];
-        B_tile[threadIdx.y][threadIdx.x] = B[(phase*TILE_WIDTH + threadIdx.y)*M + Col];
+    float sum = 0.0f;
+    int numPhases = (K + TILE_WIDTH - 1) / TILE_WIDTH;
+
+    for (int p = 0; p < numPhases; p++) {
+        // Cooperatively load tile of A into shared memory (with zero-padding out-of-bounds)
+        int colA = p * TILE_WIDTH + tx;
+        if (Row < M && colA < K) {
+            A_tile[ty][tx] = A[Row * K + colA];
+        } else {
+            A_tile[ty][tx] = 0.0f;
+        }
+
+        // Cooperatively load tile of B into shared memory (with zero-padding out-of-bounds)
+        int rowB = p * TILE_WIDTH + ty;
+        if (rowB < K && Col < N) {
+            B_tile[ty][tx] = B[rowB * N + Col];
+        } else {
+            B_tile[ty][tx] = 0.0f;
+        }
+
         __syncthreads();
 
+        // Compute partial dot products from shared memory tiles
+        #pragma unroll
         for (int k = 0; k < TILE_WIDTH; ++k) {
-            Pvalue += A_tile[threadIdx.y][k] * B_tile[k][threadIdx.x];
+            sum += A_tile[ty][k] * B_tile[k][tx];
         }
+
         __syncthreads();
     }
-    C[Row*M + Col] = Pvalue;
+
+    // Write final accumulated result to global memory if within matrix C bounds
+    if (Row < M && Col < N) {
+        C[Row * N + Col] = sum;
+    }
 }
 
+/**
+ * @brief Driver function to run the Tiled CUDA kernel with shared memory and record timings.
+ */
 void run_gpu_global_and_shared_memory(
     const float *A,
     const float *B,
@@ -248,6 +284,8 @@ void run_gpu_global_and_shared_memory(
     int tile_width,
     GpuTiming *timing
 ) {
+    if (tile_width <= 0) tile_width = block_dim_size;
+
     size_t size_A = (size_t)M * K * sizeof(float);
     size_t size_B = (size_t)K * N * sizeof(float);
     size_t size_C = (size_t)M * N * sizeof(float);
@@ -280,11 +318,14 @@ void run_gpu_global_and_shared_memory(
     memcpy(dev_B, B, size_B);
     memset(dev_C, 0, size_C);
 
-    // Warm-up cache / page tables if necessary, then time pure kernel execution
     CUDA_CHECK(cudaEventRecord(ev_start));
-    tiled_matrix_multiplication_cuda<<<gridDim, blockDim>>>(
-        dev_A, dev_B, dev_C, M, K, N, tile_width
-    );
+    if (tile_width == 8) {
+        tiled_matrix_multiplication_cuda<8><<<gridDim, blockDim>>>(dev_A, dev_B, dev_C, M, K, N);
+    } else if (tile_width == 32) {
+        tiled_matrix_multiplication_cuda<32><<<gridDim, blockDim>>>(dev_A, dev_B, dev_C, M, K, N);
+    } else {
+        tiled_matrix_multiplication_cuda<16><<<gridDim, blockDim>>>(dev_A, dev_B, dev_C, M, K, N);
+    }
     CUDA_CHECK(cudaEventRecord(ev_stop));
     CUDA_CHECK(cudaEventSynchronize(ev_stop));
     CUDA_CHECK(cudaGetLastError());
@@ -312,13 +353,15 @@ void run_gpu_global_and_shared_memory(
 }
 
 // ---------------------------------------------------------------------------
-// 3. Main Entry Point
+// 4. Main Entry Point
 // ---------------------------------------------------------------------------
 int main(int argc, char **argv) {
     Config cfg = parse_args(argc, argv);
 
     // CUDA device initialization
-    if (cfg.mode == MODE_GPU || cfg.mode == MODE_ALL) {
+    bool need_gpu = (cfg.mode == MODE_GPU_NAIVE || cfg.mode == MODE_GPU_TILED ||
+                     cfg.mode == MODE_GPU_BOTH  || cfg.mode == MODE_ALL);
+    if (need_gpu) {
         int devCount = 0;
         CUDA_CHECK(cudaGetDeviceCount(&devCount));
         if (devCount == 0) {
@@ -341,24 +384,29 @@ int main(int argc, char **argv) {
 
     float *A = (float*)malloc(size_A);
     float *B = (float*)malloc(size_B);
-    float *C_std = (float*)malloc(size_C);
-    float *C_opt = (float*)malloc(size_C);
-    float *C_gpu = (float*)malloc(size_C);
+    float *C_std   = (float*)malloc(size_C);
+    float *C_opt   = (float*)malloc(size_C);
+    float *C_naive = (float*)malloc(size_C);
+    float *C_tiled = (float*)malloc(size_C);
 
-    if (!A || !B || !C_std || !C_opt || !C_gpu) {
+    if (!A || !B || !C_std || !C_opt || !C_naive || !C_tiled) {
         fprintf(stderr, "Error: Failed to allocate host memory for matrices.\n");
         return EXIT_FAILURE;
     }
 
     // Initialize inputs
-    cpu_init(A, B, C_std, C_opt, C_gpu, cfg.M, cfg.K, cfg.N, cfg.numThreads);
+    cpu_init(A, B, C_std, C_opt, C_naive, C_tiled, cfg.M, cfg.K, cfg.N, cfg.numThreads);
 
     // Optional Warm-Up run
-    if (cfg.warmup) {
-        if (cfg.mode == MODE_GPU || cfg.mode == MODE_ALL) {
-            GpuTiming warmTiming;
-            run_gpu_global_memory(A, B, C_gpu, cfg.M, cfg.K, cfg.N, cfg.blockSize, &warmTiming);
-            memset(C_gpu, 0, size_C);
+    if (cfg.warmup && need_gpu) {
+        GpuTiming warmTiming;
+        if (cfg.mode == MODE_GPU_NAIVE || cfg.mode == MODE_ALL || cfg.mode == MODE_GPU_BOTH) {
+            run_gpu_global_memory(A, B, C_naive, cfg.M, cfg.K, cfg.N, cfg.blockSize, &warmTiming);
+            memset(C_naive, 0, size_C);
+        }
+        if (cfg.mode == MODE_GPU_TILED || cfg.mode == MODE_ALL || cfg.mode == MODE_GPU_BOTH) {
+            run_gpu_global_and_shared_memory(A, B, C_tiled, cfg.M, cfg.K, cfg.N, cfg.blockSize, cfg.tileWidth, &warmTiming);
+            memset(C_tiled, 0, size_C);
         }
     }
 
@@ -392,46 +440,50 @@ int main(int argc, char **argv) {
         }
     }
 
-    // 3. GPU Naive Benchmark
+    // 3. GPU Naive Benchmark (Point 4.1)
     GpuTiming gpuNaiveTiming;
     memset(&gpuNaiveTiming, 0, sizeof(gpuNaiveTiming));
-    bool verifiedNaiveGpu = true;
-    if (cfg.mode == MODE_GPU || cfg.mode == MODE_ALL) {
-        run_gpu_global_memory(A, B, C_gpu, cfg.M, cfg.K, cfg.N, cfg.blockSize, &gpuNaiveTiming);
+    bool verifiedNaive = true;
+    if (cfg.mode == MODE_GPU_NAIVE || cfg.mode == MODE_GPU_BOTH || cfg.mode == MODE_ALL) {
+        run_gpu_global_memory(A, B, C_naive, cfg.M, cfg.K, cfg.N, cfg.blockSize, &gpuNaiveTiming);
 
         if (cfg.mode == MODE_ALL) {
-            verifiedNaiveGpu = check_matrix_equality(C_std, C_gpu, cfg.M, cfg.N, cfg.tolerance);
+            verifiedNaive = check_matrix_equality(C_std, C_naive, cfg.M, cfg.N, cfg.tolerance);
         } else {
             float expectedVal = (float)cfg.K * 0x1p-10f;
-            verifiedNaiveGpu = (fabsf(C_gpu[0] - expectedVal) <= cfg.tolerance);
+            verifiedNaive = (fabsf(C_naive[0] - expectedVal) <= cfg.tolerance);
         }
     }
 
-    // 4. GPU Tiled Benchmark
+    // 4. GPU Tiled Benchmark (Point 4.2)
     GpuTiming gpuTiledTiming;
     memset(&gpuTiledTiming, 0, sizeof(gpuTiledTiming));
-    bool verifiedTiledGpu = true;
-    if (cfg.mode == MODE_GPU || cfg.mode == MODE_ALL) {
-        run_gpu_global_memory(A, B, C_gpu, cfg.M, cfg.K, cfg.N, cfg.blockSize, &gpuTiledTiming);
+    bool verifiedTiled = true;
+    if (cfg.mode == MODE_GPU_TILED || cfg.mode == MODE_GPU_BOTH || cfg.mode == MODE_ALL) {
+        run_gpu_global_and_shared_memory(A, B, C_tiled, cfg.M, cfg.K, cfg.N, cfg.blockSize, cfg.tileWidth, &gpuTiledTiming);
 
         if (cfg.mode == MODE_ALL) {
-            verifiedTiledGpu = check_matrix_equality(C_std, C_gpu, cfg.M, cfg.N, cfg.tolerance);
+            verifiedTiled = check_matrix_equality(C_std, C_tiled, cfg.M, cfg.N, cfg.tolerance);
         } else {
             float expectedVal = (float)cfg.K * 0x1p-10f;
-            verifiedTiledGpu = (fabsf(C_gpu[0] - expectedVal) <= cfg.tolerance);
+            verifiedTiled = (fabsf(C_tiled[0] - expectedVal) <= cfg.tolerance);
         }
     }
 
-
     // Output results
-    print_results(cfg, cpuStdMs, cpuOptMs, gpuNaiveTiming, verifiedStd, verifiedOpt, verifiedNaiveGpu);
+    print_results(
+        cfg, cpuStdMs, cpuOptMs,
+        gpuNaiveTiming, gpuTiledTiming,
+        verifiedStd, verifiedOpt, verifiedNaive, verifiedTiled
+    );
 
     // Clean up
     free(A);
     free(B);
     free(C_std);
     free(C_opt);
-    free(C_gpu);
+    free(C_naive);
+    free(C_tiled);
 
     return EXIT_SUCCESS;
 }

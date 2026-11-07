@@ -36,8 +36,10 @@ enum RunMode {
     MODE_CPU_STD,       // CPU baseline standard (i-j-k loop)
     MODE_CPU_OPT,       // CPU optimized loop-interchanged (i-k-j loop)
     MODE_CPU_BOTH,      // Both CPU implementations
-    MODE_GPU,           // CUDA Naive (Global memory only)
-    MODE_ALL            // CPU Standard + CPU Optimized + GPU Naive
+    MODE_GPU_NAIVE,     // Point 4.1: CUDA Naive (Global memory only)
+    MODE_GPU_TILED,     // Point 4.2: CUDA Tiled (Shared memory)
+    MODE_GPU_BOTH,      // Both GPU implementations (Naive + Tiled)
+    MODE_ALL            // CPU Standard + CPU Optimized + GPU Naive + GPU Tiled
 };
 
 typedef struct {
@@ -46,6 +48,7 @@ typedef struct {
     int K;
     int N;
     int blockSize;          // 8, 16, or 32 (BxB 2D block dimension)
+    int tileWidth;          // Tile width for shared memory (default: matches blockSize)
     int numThreads;         // OpenMP CPU threads (default: 8)
     int devId;              // CUDA device ID (default: 0)
     int csvOutput;          // Output machine-readable CSV format
@@ -116,14 +119,15 @@ static inline void print_usage(const char *prog) {
     printf("Usage:\n");
     printf("  %s [mode] [blockSize] [M] [K] [N] [options]\n\n", prog);
     printf("Positional Arguments (optional):\n");
-    printf("  mode        : Execution mode ('all', 'cpu', 'cpu_opt', 'cpu_both', 'gpu') [default: all]\n");
+    printf("  mode        : Execution mode ('all', 'cpu', 'cpu_opt', 'cpu_both', 'gpu_naive', 'gpu_tiled', 'gpu') [default: all]\n");
     printf("  blockSize   : CUDA 2D block dimension ('8', '16', or '32' for BxB) [default: 16]\n");
     printf("  M           : Number of rows in A and C [default: 2048]\n");
     printf("  K           : Columns in A and rows in B [default: 1024]\n");
     printf("  N           : Columns in B and C [default: 512]\n\n");
     printf("Options:\n");
-    printf("  --mode <m>       : Execution mode ('all', 'cpu', 'cpu_opt', 'cpu_both', 'gpu')\n");
+    printf("  --mode <m>       : Execution mode ('all', 'cpu', 'cpu_opt', 'cpu_both', 'gpu_naive', 'gpu_tiled', 'gpu')\n");
     printf("  --block <b>      : CUDA 2D block dimension (8, 16, 32)\n");
+    printf("  --tile <t>       : Shared memory tile width (default: matches block dimension)\n");
     printf("  --threads <t>    : Number of OpenMP CPU threads [default: 8]\n");
     printf("  -M <int>         : Matrix M dimension (rows of A & C)\n");
     printf("  -K <int>         : Matrix K dimension (cols of A, rows of B)\n");
@@ -142,6 +146,7 @@ static inline Config parse_args(int argc, char **argv) {
     cfg.K = DEFAULT_K;
     cfg.N = DEFAULT_N;
     cfg.blockSize = DEFAULT_BLOCK_SIZE;
+    cfg.tileWidth = DEFAULT_BLOCK_SIZE;
     cfg.numThreads = DEFAULT_NUM_THREADS;
     cfg.devId = 0;
     cfg.csvOutput = 0;
@@ -158,10 +163,15 @@ static inline Config parse_args(int argc, char **argv) {
             if (strcasecmp(m, "cpu") == 0) cfg.mode = MODE_CPU_STD;
             else if (strcasecmp(m, "cpu_opt") == 0) cfg.mode = MODE_CPU_OPT;
             else if (strcasecmp(m, "cpu_both") == 0) cfg.mode = MODE_CPU_BOTH;
-            else if (strcasecmp(m, "gpu") == 0) cfg.mode = MODE_GPU;
+            else if (strcasecmp(m, "gpu_naive") == 0 || strcasecmp(m, "naive") == 0) cfg.mode = MODE_GPU_NAIVE;
+            else if (strcasecmp(m, "gpu_tiled") == 0 || strcasecmp(m, "tiled") == 0) cfg.mode = MODE_GPU_TILED;
+            else if (strcasecmp(m, "gpu") == 0 || strcasecmp(m, "gpu_both") == 0) cfg.mode = MODE_GPU_BOTH;
             else cfg.mode = MODE_ALL;
         } else if (strcmp(argv[i], "--block") == 0 && i + 1 < argc) {
             cfg.blockSize = atoi(argv[++i]);
+            cfg.tileWidth = cfg.blockSize;
+        } else if (strcmp(argv[i], "--tile") == 0 && i + 1 < argc) {
+            cfg.tileWidth = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
             cfg.numThreads = atoi(argv[++i]);
         } else if (strcmp(argv[i], "-M") == 0 && i + 1 < argc) {
@@ -181,13 +191,19 @@ static inline Config parse_args(int argc, char **argv) {
                 if (strcasecmp(argv[i], "cpu") == 0) cfg.mode = MODE_CPU_STD;
                 else if (strcasecmp(argv[i], "cpu_opt") == 0) cfg.mode = MODE_CPU_OPT;
                 else if (strcasecmp(argv[i], "cpu_both") == 0) cfg.mode = MODE_CPU_BOTH;
-                else if (strcasecmp(argv[i], "gpu") == 0) cfg.mode = MODE_GPU;
+                else if (strcasecmp(argv[i], "gpu_naive") == 0 || strcasecmp(argv[i], "naive") == 0) cfg.mode = MODE_GPU_NAIVE;
+                else if (strcasecmp(argv[i], "gpu_tiled") == 0 || strcasecmp(argv[i], "tiled") == 0) cfg.mode = MODE_GPU_TILED;
+                else if (strcasecmp(argv[i], "gpu") == 0 || strcasecmp(argv[i], "gpu_both") == 0) cfg.mode = MODE_GPU_BOTH;
                 else if (strcasecmp(argv[i], "all") == 0) cfg.mode = MODE_ALL;
-                else if (atoi(argv[i]) == 8 || atoi(argv[i]) == 16 || atoi(argv[i]) == 32) cfg.blockSize = atoi(argv[i]);
-                else cfg.M = atoi(argv[i]);
+                else if (atoi(argv[i]) == 8 || atoi(argv[i]) == 16 || atoi(argv[i]) == 32) {
+                    cfg.blockSize = atoi(argv[i]);
+                    cfg.tileWidth = cfg.blockSize;
+                } else cfg.M = atoi(argv[i]);
             } else if (pos_idx == 1) {
-                if (atoi(argv[i]) == 8 || atoi(argv[i]) == 16 || atoi(argv[i]) == 32) cfg.blockSize = atoi(argv[i]);
-                else cfg.K = atoi(argv[i]);
+                if (atoi(argv[i]) == 8 || atoi(argv[i]) == 16 || atoi(argv[i]) == 32) {
+                    cfg.blockSize = atoi(argv[i]);
+                    cfg.tileWidth = cfg.blockSize;
+                } else cfg.K = atoi(argv[i]);
             } else if (pos_idx == 2) {
                 cfg.M = atoi(argv[i]);
             } else if (pos_idx == 3) {
@@ -208,15 +224,18 @@ static inline void print_results(
     const Config &cfg,
     double cpuStdMs,
     double cpuOptMs,
-    const GpuTiming &gpuTiming,
+    const GpuTiming &gpuNaiveTiming,
+    const GpuTiming &gpuTiledTiming,
     bool verifiedStd,
     bool verifiedOpt,
-    bool verifiedGpu
+    bool verifiedNaive,
+    bool verifiedTiled
 ) {
     double totalFlops = 2.0 * (double)cfg.M * (double)cfg.N * (double)cfg.K;
-    double gflopsStd = compute_gflops(cfg.M, cfg.K, cfg.N, cpuStdMs);
-    double gflopsOpt = compute_gflops(cfg.M, cfg.K, cfg.N, cpuOptMs);
-    double gflopsGpu = compute_gflops(cfg.M, cfg.K, cfg.N, gpuTiming.kernelMs);
+    double gflopsStd   = compute_gflops(cfg.M, cfg.K, cfg.N, cpuStdMs);
+    double gflopsOpt   = compute_gflops(cfg.M, cfg.K, cfg.N, cpuOptMs);
+    double gflopsNaive = compute_gflops(cfg.M, cfg.K, cfg.N, gpuNaiveTiming.kernelMs);
+    double gflopsTiled = compute_gflops(cfg.M, cfg.K, cfg.N, gpuTiledTiming.kernelMs);
 
     if (cfg.csvOutput) {
         if (cfg.mode == MODE_CPU_STD) {
@@ -227,22 +246,29 @@ static inline void print_results(
             printf("CSV,cpu_opt,%d,%d,%d,%d,%.4f,%.2f,%s\n",
                    cfg.numThreads, cfg.M, cfg.K, cfg.N, cpuOptMs, gflopsOpt,
                    verifiedOpt ? "PASS" : "FAIL");
-        } else if (cfg.mode == MODE_GPU) {
-            printf("CSV,gpu,%d,%d,%d,%d,%d,%d,%d,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f,%s\n",
-                   cfg.blockSize, gpuTiming.gridDim.x, gpuTiming.gridDim.y,
+        } else if (cfg.mode == MODE_GPU_NAIVE) {
+            printf("CSV,gpu_naive,%d,%d,%d,%d,%d,%d,%d,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f,%s\n",
+                   cfg.blockSize, gpuNaiveTiming.gridDim.x, gpuNaiveTiming.gridDim.y,
                    cfg.numThreads, cfg.M, cfg.K, cfg.N,
-                   gpuTiming.allocMs, gpuTiming.htodMs, gpuTiming.kernelMs, gpuTiming.dtohMs,
-                   gpuTiming.computeMs, gpuTiming.totalMs, gflopsGpu,
-                   verifiedGpu ? "PASS" : "FAIL");
+                   gpuNaiveTiming.allocMs, gpuNaiveTiming.htodMs, gpuNaiveTiming.kernelMs, gpuNaiveTiming.dtohMs,
+                   gpuNaiveTiming.computeMs, gpuNaiveTiming.totalMs, gflopsNaive,
+                   verifiedNaive ? "PASS" : "FAIL");
+        } else if (cfg.mode == MODE_GPU_TILED) {
+            printf("CSV,gpu_tiled,%d,%d,%d,%d,%d,%d,%d,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f,%s\n",
+                   cfg.blockSize, gpuTiledTiming.gridDim.x, gpuTiledTiming.gridDim.y,
+                   cfg.numThreads, cfg.M, cfg.K, cfg.N,
+                   gpuTiledTiming.allocMs, gpuTiledTiming.htodMs, gpuTiledTiming.kernelMs, gpuTiledTiming.dtohMs,
+                   gpuTiledTiming.computeMs, gpuTiledTiming.totalMs, gflopsTiled,
+                   verifiedTiled ? "PASS" : "FAIL");
         } else {
             // Full consolidated row
-            printf("CSV,all,%d,%d,%d,%d,%d,%.4f,%.4f,%.4f,%.4f,%.2f,%.2f,%.2f,%.2f,%.2f,%s\n",
+            printf("CSV,all,%d,%d,%d,%d,%d,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f,%.2f,%.2f,%.2f,%s\n",
                    cfg.blockSize, cfg.numThreads, cfg.M, cfg.K, cfg.N,
-                   cpuStdMs, cpuOptMs, gpuTiming.kernelMs, gpuTiming.totalMs,
-                   gflopsStd, gflopsOpt, gflopsGpu,
-                   (gpuTiming.kernelMs > 0 ? (cpuStdMs / gpuTiming.kernelMs) : 0.0),
-                   (gpuTiming.kernelMs > 0 ? (cpuOptMs / gpuTiming.kernelMs) : 0.0),
-                   (verifiedGpu && verifiedOpt) ? "PASS" : "FAIL");
+                   cpuStdMs, cpuOptMs,
+                   gpuNaiveTiming.kernelMs, gpuNaiveTiming.totalMs,
+                   gpuTiledTiming.kernelMs, gpuTiledTiming.totalMs,
+                   gflopsStd, gflopsOpt, gflopsNaive, gflopsTiled,
+                   (verifiedStd && verifiedOpt && verifiedNaive && verifiedTiled) ? "PASS" : "FAIL");
         }
     } else {
         printf("================================================================================\n");
@@ -265,25 +291,51 @@ static inline void print_results(
             printf(" CPU Optimized (Loop I-K-J): %8.4f ms | %8.2f GFLOP/s (Speedup vs Std: %.2fx, %s)\n",
                    cpuOptMs, gflopsOpt, speedupOverStd, verifiedOpt ? "PASSED" : "FAILED");
         }
-        if (cfg.mode == MODE_GPU || cfg.mode == MODE_ALL) {
+
+        // Point 4.1: GPU Naive
+        if (cfg.mode == MODE_GPU_NAIVE || cfg.mode == MODE_GPU_BOTH || cfg.mode == MODE_ALL) {
             printf("--------------------------------------------------------------------------------\n");
-            printf(" GPU Naive Kernel (Global Mem Only)\n");
+            printf(" Point 4.1: CUDA Naive Kernel (Global Memory Only)\n");
             printf("   Block Dimensions     : %d x %d (%d threads/block)\n",
-                   gpuTiming.blockDim.x, gpuTiming.blockDim.y, cfg.blockSize * cfg.blockSize);
+                   gpuNaiveTiming.blockDim.x, gpuNaiveTiming.blockDim.y, cfg.blockSize * cfg.blockSize);
             printf("   Grid Dimensions      : %d x %d (%d blocks)\n",
-                   gpuTiming.gridDim.x, gpuTiming.gridDim.y, gpuTiming.gridDim.x * gpuTiming.gridDim.y);
-            printf("   Unified Mem Alloc    : %8.4f ms\n", gpuTiming.allocMs);
-            printf("   Pure Kernel Time     : %8.4f ms | %8.2f GFLOP/s\n", gpuTiming.kernelMs, gflopsGpu);
-            printf("   Total GPU Time       : %8.4f ms (Alloc + Kernel)\n", gpuTiming.totalMs);
-            if (cpuStdMs > 0.0 && gpuTiming.kernelMs > 0.0) {
+                   gpuNaiveTiming.gridDim.x, gpuNaiveTiming.gridDim.y, gpuNaiveTiming.gridDim.x * gpuNaiveTiming.gridDim.y);
+            printf("   Pure Kernel Time     : %8.4f ms | %8.2f GFLOP/s\n", gpuNaiveTiming.kernelMs, gflopsNaive);
+            printf("   Total GPU Time       : %8.4f ms (Alloc + Kernel)\n", gpuNaiveTiming.totalMs);
+            if (cpuStdMs > 0.0 && gpuNaiveTiming.kernelMs > 0.0) {
                 printf("   Speedup vs CPU Std   : %8.2fx (Kernel) | %8.2fx (Total)\n",
-                       cpuStdMs / gpuTiming.kernelMs, cpuStdMs / gpuTiming.totalMs);
+                       cpuStdMs / gpuNaiveTiming.kernelMs, cpuStdMs / gpuNaiveTiming.totalMs);
             }
-            if (cpuOptMs > 0.0 && gpuTiming.kernelMs > 0.0) {
+            if (cpuOptMs > 0.0 && gpuNaiveTiming.kernelMs > 0.0) {
                 printf("   Speedup vs CPU Opt   : %8.2fx (Kernel) | %8.2fx (Total)\n",
-                       cpuOptMs / gpuTiming.kernelMs, cpuOptMs / gpuTiming.totalMs);
+                       cpuOptMs / gpuNaiveTiming.kernelMs, cpuOptMs / gpuNaiveTiming.totalMs);
             }
-            printf("   Verification vs CPU  : %s\n", verifiedGpu ? "PASSED (all results match reference)" : "FAILED");
+            printf("   Verification vs CPU  : %s\n", verifiedNaive ? "PASSED (all results match reference)" : "FAILED");
+        }
+
+        // Point 4.2: GPU Tiled
+        if (cfg.mode == MODE_GPU_TILED || cfg.mode == MODE_GPU_BOTH || cfg.mode == MODE_ALL) {
+            printf("--------------------------------------------------------------------------------\n");
+            printf(" Point 4.2: CUDA Tiled Kernel (Global & Shared Memory)\n");
+            printf("   Tile / Block Dim     : %d x %d (%d threads, 2x%dx%d shared floats)\n",
+                   cfg.tileWidth, cfg.tileWidth, cfg.blockSize * cfg.blockSize, cfg.tileWidth, cfg.tileWidth);
+            printf("   Grid Dimensions      : %d x %d (%d blocks)\n",
+                   gpuTiledTiming.gridDim.x, gpuTiledTiming.gridDim.y, gpuTiledTiming.gridDim.x * gpuTiledTiming.gridDim.y);
+            printf("   Pure Kernel Time     : %8.4f ms | %8.2f GFLOP/s\n", gpuTiledTiming.kernelMs, gflopsTiled);
+            printf("   Total GPU Time       : %8.4f ms (Alloc + Kernel)\n", gpuTiledTiming.totalMs);
+            if (cpuStdMs > 0.0 && gpuTiledTiming.kernelMs > 0.0) {
+                printf("   Speedup vs CPU Std   : %8.2fx (Kernel) | %8.2fx (Total)\n",
+                       cpuStdMs / gpuTiledTiming.kernelMs, cpuStdMs / gpuTiledTiming.totalMs);
+            }
+            if (cpuOptMs > 0.0 && gpuTiledTiming.kernelMs > 0.0) {
+                printf("   Speedup vs CPU Opt   : %8.2fx (Kernel) | %8.2fx (Total)\n",
+                       cpuOptMs / gpuTiledTiming.kernelMs, cpuOptMs / gpuTiledTiming.totalMs);
+            }
+            if (gpuNaiveTiming.kernelMs > 0.0 && gpuTiledTiming.kernelMs > 0.0) {
+                printf("   Speedup vs Naive GPU : %8.2fx (Kernel Speedup)\n",
+                       gpuNaiveTiming.kernelMs / gpuTiledTiming.kernelMs);
+            }
+            printf("   Verification vs CPU  : %s\n", verifiedTiled ? "PASSED (all results match reference)" : "FAILED");
         }
         printf("================================================================================\n");
     }
