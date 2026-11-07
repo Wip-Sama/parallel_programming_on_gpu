@@ -179,6 +179,7 @@ static inline Config parse_args(int argc, char **argv) {
             cfg.tileWidth = cfg.blockSize;
         } else if (strcmp(argv[i], "--tile") == 0 && i + 1 < argc) {
             cfg.tileWidth = atoi(argv[++i]);
+            cfg.blockSize = cfg.tileWidth;
         } else if ((strcmp(argv[i], "--nt") == 0 || strcmp(argv[i], "--tile-num") == 0) && i + 1 < argc) {
             cfg.tileNumber = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {

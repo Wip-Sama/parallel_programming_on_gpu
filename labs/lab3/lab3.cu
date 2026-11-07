@@ -478,6 +478,8 @@ void run_gpu_coarse_grained_tiled(
             coarse_grained_tiled_matrix_multiplication_cuda<8, 1><<<gridDim, blockDim>>>(dev_A, dev_B, dev_C, M, K, N);
         } else if (tile_number == 4) {
             coarse_grained_tiled_matrix_multiplication_cuda<8, 4><<<gridDim, blockDim>>>(dev_A, dev_B, dev_C, M, K, N);
+        } else if (tile_number == 8) {
+            coarse_grained_tiled_matrix_multiplication_cuda<8, 8><<<gridDim, blockDim>>>(dev_A, dev_B, dev_C, M, K, N);
         } else {
             coarse_grained_tiled_matrix_multiplication_cuda<8, 2><<<gridDim, blockDim>>>(dev_A, dev_B, dev_C, M, K, N);
         }
@@ -486,6 +488,8 @@ void run_gpu_coarse_grained_tiled(
             coarse_grained_tiled_matrix_multiplication_cuda<32, 1><<<gridDim, blockDim>>>(dev_A, dev_B, dev_C, M, K, N);
         } else if (tile_number == 4) {
             coarse_grained_tiled_matrix_multiplication_cuda<32, 4><<<gridDim, blockDim>>>(dev_A, dev_B, dev_C, M, K, N);
+        } else if (tile_number == 8) {
+            coarse_grained_tiled_matrix_multiplication_cuda<32, 8><<<gridDim, blockDim>>>(dev_A, dev_B, dev_C, M, K, N);
         } else {
             coarse_grained_tiled_matrix_multiplication_cuda<32, 2><<<gridDim, blockDim>>>(dev_A, dev_B, dev_C, M, K, N);
         }
@@ -494,6 +498,10 @@ void run_gpu_coarse_grained_tiled(
             coarse_grained_tiled_matrix_multiplication_cuda<16, 1><<<gridDim, blockDim>>>(dev_A, dev_B, dev_C, M, K, N);
         } else if (tile_number == 4) {
             coarse_grained_tiled_matrix_multiplication_cuda<16, 4><<<gridDim, blockDim>>>(dev_A, dev_B, dev_C, M, K, N);
+        } else if (tile_number == 8) {
+            coarse_grained_tiled_matrix_multiplication_cuda<16, 8><<<gridDim, blockDim>>>(dev_A, dev_B, dev_C, M, K, N);
+        } else if (tile_number == 16) {
+            coarse_grained_tiled_matrix_multiplication_cuda<16, 16><<<gridDim, blockDim>>>(dev_A, dev_B, dev_C, M, K, N);
         } else {
             coarse_grained_tiled_matrix_multiplication_cuda<16, 2><<<gridDim, blockDim>>>(dev_A, dev_B, dev_C, M, K, N);
         }

@@ -30,7 +30,7 @@ if COMMON_PYTHON_DIR not in sys.path:
 from bench_utils import ensure_dir, aggregate_metrics, save_csv
 
 BLOCK_CONFIGS = [8, 16, 32]
-COARSE_CONFIGS = [(8, 2), (16, 2), (32, 2), (16, 4), (32, 4)]
+COARSE_CONFIGS = [(8, 2), (16, 2), (32, 2), (16, 4), (32, 4), (16, 8), (32, 8)]
 REPETITIONS = 4
 REPORT_DIR = os.path.join(LAB_DIR, "reports")
 ensure_dir(REPORT_DIR)

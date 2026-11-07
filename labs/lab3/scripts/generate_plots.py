@@ -348,11 +348,11 @@ def draw_plot3_gflops(data):
                 "gflops": data[kt]["gflops"],
                 "color": PALETTE["secondary"]
             })
-    for (b, nt) in [(8, 2), (16, 2), (32, 2), (32, 4)]:
+    for (b, nt) in [(8, 2), (16, 2), (32, 2), (16, 4), (32, 4), (16, 8), (32, 8)]:
         kc = f"CUDA Coarse {b}x{b} (nt={nt})"
         if kc in data:
             items.append({
-                "name": f"Crs {b}x{b}",
+                "name": f"Crs {b}",
                 "sub": f"nt={nt}",
                 "gflops": data[kc]["gflops"],
                 "color": PALETTE["accent"]
