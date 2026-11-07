@@ -46,7 +46,7 @@ endif
 
 TARGETS := lab3
 
-.PHONY: all clean run bench plots gtx980 rtx4080 universal help
+.PHONY: all clean run bench plots profile gtx980 rtx4080 universal help
 
 all: $(TARGETS)
 
@@ -62,6 +62,10 @@ bench: lab3
 
 plots:
 	python3 scripts/generate_plots.py
+	python3 scripts/profile_hardware_metrics.py
+
+profile: lab3
+	python3 scripts/profile_hardware_metrics.py
 
 gtx980:
 	$(MAKE) ARCH=sm_52

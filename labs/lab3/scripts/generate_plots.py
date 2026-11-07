@@ -72,7 +72,7 @@ def draw_plot1_block_sizes(data):
     """
     Plot 1: Section 5.5 Requirement:
     'A bar plot for each CUDA implementation reporting the execution times for each block configuration'
-    Compares Naive (Point 4.1), Tiled (Point 4.2), and Coarse-Grained (Point 4.3, nt=2) across 8x8, 16x16, 32x32.
+    Compares Naive (Point 4.1), Tiled (Point 4.2), and Coarse-Grained (Point 4.3, using Best nt) across 8x8, 16x16, 32x32.
     """
     w, h = 980, 560
     surface, ctx = create_surface(w, h)
@@ -80,7 +80,7 @@ def draw_plot1_block_sizes(data):
     draw_title(
         ctx,
         "Lab 3: CUDA Execution Times across Block Configurations",
-        "Comparison of Naive (Point 4.1), Tiled (Point 4.2), and Coarse-Grained nt=2 (Point 4.3) across Block Configurations",
+        "Comparison of Naive (Point 4.1), Tiled (Point 4.2), and Coarse-Grained (Point 4.3, Best nt) across Block Configurations",
         x=50, y=45
     )
 
@@ -89,14 +89,22 @@ def draw_plot1_block_sizes(data):
     plot_h = bottom - top
 
     blocks = [8, 16, 32]
+    
+    # Helper to find best coarse configuration for a given block size
+    def get_best_coarse(b):
+        candidates = [k for k in data if k.startswith(f"CUDA Coarse {b}x{b}")]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda k: data[k]["kernelMean"])
+
     vals = []
     for b in blocks:
         kn = f"CUDA Naive {b}x{b}"
         kt = f"CUDA Tiled {b}x{b}"
-        kc = f"CUDA Coarse {b}x{b} (nt=2)"
+        kc = get_best_coarse(b)
         if kn in data: vals.append(data[kn]["kernelMean"])
         if kt in data: vals.append(data[kt]["kernelMean"])
-        if kc in data: vals.append(data[kc]["kernelMean"])
+        if kc and kc in data: vals.append(data[kc]["kernelMean"])
 
     max_val = (max(vals) * 1.25) if vals else 100.0
     draw_axes(ctx, left, top, right, bottom, max_val, ticks=5, y_label_fmt="{:.1f}", y_unit="ms")
@@ -105,7 +113,7 @@ def draw_plot1_block_sizes(data):
     legend_items = [
         ("Naive (Global Mem)", PALETTE["primary"]),
         ("Tiled (Shared Mem)", PALETTE["secondary"]),
-        ("Coarse-Grained (nt=2)", PALETTE["accent"]),
+        ("Coarse-Grained (Best nt)", PALETTE["accent"]),
     ]
     draw_legend(ctx, start_x=left + 160, y=85, items=legend_items, item_spacing=180.0)
 
@@ -115,7 +123,8 @@ def draw_plot1_block_sizes(data):
     for i, b in enumerate(blocks):
         kn = f"CUDA Naive {b}x{b}"
         kt = f"CUDA Tiled {b}x{b}"
-        kc = f"CUDA Coarse {b}x{b} (nt=2)"
+        kc = get_best_coarse(b)
+        best_nt = data[kc]["tileNumber"] if kc and kc in data else 2
         cx = left + i * col_w + col_w / 2.0
 
         bar_w = 40.0
@@ -149,8 +158,8 @@ def draw_plot1_block_sizes(data):
             ctx.move_to(bx2 + 1, by2 - 6)
             ctx.show_text(f"{data[kt]['kernelMean']:.1f}")
 
-        # Bar 3: Coarse nt=2
-        if kc in data:
+        # Bar 3: Coarse (Best nt)
+        if kc and kc in data:
             bh3 = (data[kc]["kernelMean"] / max_val) * plot_h
             by3 = bottom - bh3
             bx3 = start_x + 2 * (bar_w + gap)
@@ -175,10 +184,10 @@ def draw_plot1_block_sizes(data):
         ctx.move_to(cx - 36, bottom + 42)
         ctx.show_text(f"({b*b} th/blk)")
 
-        if kn in data and kc in data and data[kc]["kernelMean"] > 0:
+        if kn in data and kc and kc in data and data[kc]["kernelMean"] > 0:
             sp = data[kn]["kernelMean"] / data[kc]["kernelMean"]
-            ctx.move_to(cx - 42, bottom + 57)
-            ctx.show_text(f"Coarse Speedup: {sp:.2f}x")
+            ctx.move_to(cx - 52, bottom + 57)
+            ctx.show_text(f"Best nt={best_nt} ({sp:.2f}x speedup)")
 
     out_path = os.path.join(REPORT_DIR, "plot1_gpu_block_sizes.png")
     save_surface(surface, out_path)
