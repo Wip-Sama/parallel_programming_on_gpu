@@ -227,48 +227,39 @@ __global__ void tiled_matrix_multiplication_cuda(
     __shared__ float A_tile[TILE_WIDTH][TILE_WIDTH];
     __shared__ float B_tile[TILE_WIDTH][TILE_WIDTH];
 
-    int tx = threadIdx.x;
-    int ty = threadIdx.y;
+    int Row = blockIdx.y*TILE_WIDTH + threadIdx.y;
+    int Col = blockIdx.x*TILE_WIDTH + threadIdx.x;
 
-    int Row = blockIdx.y * TILE_WIDTH + ty;
-    int Col = blockIdx.x * TILE_WIDTH + tx;
-
-    float sum = 0.0f;
     int numPhases = (K + TILE_WIDTH - 1) / TILE_WIDTH;
 
-    for (int p = 0; p < numPhases; p++) {
-        // Cooperatively load tile of A into shared memory (with zero-padding out-of-bounds)
-        int colA = p * TILE_WIDTH + tx;
+    float sum = 0;
+    for (int phase = 0; phase < numPhases; phase++) {
+        // Load stuff into shared memory
+        int colA = phase * TILE_WIDTH + threadIdx.x;
         if (Row < M && colA < K) {
-            A_tile[ty][tx] = A[Row * K + colA];
+            A_tile[threadIdx.y][threadIdx.x] = A[Row * K + colA];
         } else {
-            A_tile[ty][tx] = 0.0f;
+            A_tile[threadIdx.y][threadIdx.x] = 0.0f;
         }
-
-        // Cooperatively load tile of B into shared memory (with zero-padding out-of-bounds)
-        int rowB = p * TILE_WIDTH + ty;
+        
+        int rowB = phase * TILE_WIDTH + threadIdx.y;
         if (rowB < K && Col < N) {
-            B_tile[ty][tx] = B[rowB * N + Col];
+            B_tile[threadIdx.y][threadIdx.x] = B[rowB * N + Col];
         } else {
-            B_tile[ty][tx] = 0.0f;
+            B_tile[threadIdx.y][threadIdx.x] = 0.0f;
         }
-
         __syncthreads();
 
-        // Compute partial dot products from shared memory tiles
-        #pragma unroll
         for (int k = 0; k < TILE_WIDTH; ++k) {
-            sum += A_tile[ty][k] * B_tile[k][tx];
+            sum += A_tile[threadIdx.y][k] * B_tile[k][threadIdx.x];
         }
-
         __syncthreads();
     }
-
-    // Write final accumulated result to global memory if within matrix C bounds
     if (Row < M && Col < N) {
         C[Row * N + Col] = sum;
     }
 }
+
 
 /**
  * @brief Driver function to run the Tiled CUDA kernel with shared memory and record timings.
